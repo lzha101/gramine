@@ -46,6 +46,11 @@ struct pal_enclave_tcb {
     void*     heap_min;
     void*     heap_max;
     int*      clear_child_tid;
+
+     /* below two fields are used by AEX Notify */
+    uint64_t  ready_for_aex_notify;
+    uint64_t  aex_counter;
+
     struct untrusted_area untrusted_area_cache;
 };
 

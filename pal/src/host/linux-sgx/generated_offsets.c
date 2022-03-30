@@ -15,6 +15,7 @@ const struct generated_offset generated_offsets[] = {
     /* defines from sgx_arch.h */
     DEFINE(SGX_FLAGS_DEBUG, SGX_FLAGS_DEBUG),
     DEFINE(SGX_FLAGS_MODE64BIT, SGX_FLAGS_MODE64BIT),
+    DEFINE(SGX_FLAGS_AEXNOTIFY, SGX_FLAGS_AEXNOTIFY),
     DEFINE(SGX_XFRM_LEGACY, SGX_XFRM_LEGACY),
     DEFINE(SGX_XFRM_AVX, SGX_XFRM_AVX),
     DEFINE(SGX_XFRM_MPX, SGX_XFRM_MPX),
@@ -54,6 +55,8 @@ const struct generated_offset generated_offsets[] = {
     OFFSET_T(SGX_GPR_RFLAGS, sgx_pal_gpr_t, rflags),
     OFFSET_T(SGX_GPR_RIP, sgx_pal_gpr_t, rip),
     OFFSET_T(SGX_GPR_EXITINFO, sgx_pal_gpr_t, exitinfo),
+    OFFSET_T(SGX_GPR_AEXNOTIFY, sgx_pal_gpr_t, aexnotify),
+    OFFSET_T(SGX_GPR_FSBASE, sgx_pal_gpr_t, fsbase),
     DEFINE(SGX_GPR_SIZE, sizeof(sgx_pal_gpr_t)),
 
     /* sgx_cpu_context_t */
@@ -123,6 +126,7 @@ const struct generated_offset generated_offsets[] = {
     OFFSET_T(TCS_OFS_LIMIT, sgx_arch_tcs_t, ofs_limit),
     OFFSET_T(TCS_OGS_LIMIT, sgx_arch_tcs_t, ogs_limit),
     DEFINE(TCS_SIZE, sizeof(sgx_arch_tcs_t)),
+    DEFINE(TCS_FLAGS_AEXNOTIFY, TCS_FLAGS_AEXNOTIFY),
 
     /* sgx_attributes_t */
     OFFSET_T(SGX_ATTRIBUTES_XFRM, sgx_attributes_t, xfrm),

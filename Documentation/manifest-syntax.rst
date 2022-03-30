@@ -1112,6 +1112,7 @@ Linux scheduler: the effective maximum is 250 samples per second.
 SGX profiling with Intel VTune Profiler
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+
 ::
 
     sgx.vtune_profile = [true|false]
@@ -1127,3 +1128,14 @@ In addition, the application manifest must also contain ``sgx.debug = true``.
    independently.
 
 See :ref:`vtune-sgx-profiling` for more information.
+
+AEX Notify
+^^^^^^^^^^
+
+::
+
+    sgx.enable_aex_notify = [true|false]
+    (Default: false)
+
+When enabled, this option instructs Gramine to use the new AEX Notify hardware
+feature. TODO: Explain what exactly it does.
