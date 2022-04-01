@@ -44,7 +44,6 @@ sgx_ecall:
     enclu
 
     # currently only ECALL_THREAD_RESET returns
-.Lafter_resume:
     popq %r15
     .cfi_adjust_cfa_offset -8
     popq %r14
@@ -70,9 +69,9 @@ async_exit_pointer:
     # increment per-thread AEX counter for stats
     lock incq %gs:PAL_HOST_TCB_AEX_CNT
 
-#ifdef DEBUG
-    # Inform that we are in AEX profiling code
-    movb $1, %gs:PAL_HOST_TCB_IN_AEX_PROF
+    # Inform that we are in AEX code
+    movb $1, %gs:PAL_HOST_TCB_IN_AEX
+
     # Save ERESUME parameters
     pushq %rax
     .cfi_adjust_cfa_offset 8
@@ -84,11 +83,17 @@ async_exit_pointer:
     # Align stack (required by System V AMD64 ABI)
     movq %rsp, %rbp
     .cfi_def_cfa_register %rbp
+    subq $RED_ZONE_SIZE, %rsp
     andq $~0xF, %rsp
 
+#ifdef DEBUG
     # Call sgx_profile_sample_aex with %rdi = TCS
     movq %rbx, %rdi
     call sgx_profile_sample_aex
+#endif
+
+    # Check if there are sync/async signals pending and invoke in-enclave stage-1 handler if any
+    call sgx_handle_aex_signal
 
     # Restore stack
     movq %rbp, %rsp
@@ -101,9 +106,8 @@ async_exit_pointer:
     .cfi_adjust_cfa_offset -8
     popq %rax
     .cfi_adjust_cfa_offset -8
-    movb $0, %gs:PAL_HOST_TCB_IN_AEX_PROF
-#endif
 
+    movb $0, %gs:PAL_HOST_TCB_IN_AEX
     .cfi_endproc
 
     # fall-through to ERESUME
@@ -123,8 +127,44 @@ async_exit_pointer_end:
     .type sgx_raise, @function
 
 sgx_raise:
+    .cfi_startproc
+    leaq .Lafter_resume(%rip), %rdx
+
+    .cfi_startproc
     leaq .Lafter_resume(%rip), %rdx
     jmp .Ldo_ecall_callee_save
+
+    # other arguments: RDI - event (sync or async signal)
+
+    # below logic is the same as for sgx_ecall(), see comments for that function
+    pushq %rbx
+    pushq %rbp
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    lock incq %gs:PAL_HOST_TCB_EENTER_CNT
+    movq %gs:PAL_HOST_TCB_TCS, %rbx
+    leaq async_exit_pointer(%rip), %rcx
+    movq $EENTER, %rax
+
+    .global sgx_raise_eenter_instr
+    .type sgx_raise_eenter_instr, @function
+
+sgx_raise_eenter_instr:
+    ENCLU
+
+.Lafter_resume:
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbp
+    popq %rbx
+    retq
+    .cfi_endproc
+
 
 .Lsgx_entry:
     # arguments: RDI - code, RSI - ms
