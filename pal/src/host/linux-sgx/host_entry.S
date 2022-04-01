@@ -108,15 +108,20 @@ async_exit_pointer:
     .cfi_adjust_cfa_offset -8
 
     movb $0, %gs:PAL_HOST_TCB_IN_AEX
-    .cfi_endproc
+
+    # In case of normal ERESUME, RDI is not used;
+    # In case of ERESUME-morphed-into-EENTER, RDI is external event in flow .Lcssa1_exception
+    movq $PAL_EVENT_INTERRUPTED, %rdi
 
     # fall-through to ERESUME
+    .cfi_endproc
 
     .global eresume_pointer
     .type eresume_pointer, @function
 
 eresume_pointer:
-    enclu   # perform ERESUME
+    # perform ERESUME (RAX already contains "ERESUME" because that's what AEX hardware flow does)
+    ENCLU
 
     .global async_exit_pointer_end
     .type async_exit_pointer_end, @function
@@ -129,10 +134,6 @@ async_exit_pointer_end:
 sgx_raise:
     .cfi_startproc
     leaq .Lafter_resume(%rip), %rdx
-
-    .cfi_startproc
-    leaq .Lafter_resume(%rip), %rdx
-    jmp .Ldo_ecall_callee_save
 
     # other arguments: RDI - event (sync or async signal)
 

@@ -182,8 +182,8 @@ enclave_entry:
     movq $0, %gs:SGX_OCALL_EXIT_CALLED
     movq $0, %gs:SGX_PRE_OCALL_STACK
 
-    # Instead of jumping to .Lcssa0_ocall_or_cssa1_exception_eexit, simply perform EEXIT because
-    # there is no modified state to clear in this "thread-reset" code path.
+    # Instead of jumping to .Lcssa0_ocall_eexit, simply perform EEXIT because there is no modified
+    # state to clear in this "thread-reset" code path.
     movq %gs:SGX_ECALL_RETURN_ADDR, %rbx
     movq $EEXIT, %rax
     enclu
@@ -225,8 +225,8 @@ enclave_entry:
     cmpl $0, %edi
     jne .Lcssa1_exception_determine_when
 
-    # TODO: we shouldn't ignore definitely-malicious exception, but we do it now
-    jmp .Lcssa1_exception_eexit
+    # definitely-malicious exception (correct untrusted runtime would never generate "0" event)
+    FAIL_LOOP
 
 .Lcssa1_exception_determine_when:
     # If this enclave thread has not been initialized yet, we should not try to call an event
@@ -235,6 +235,9 @@ enclave_entry:
     jne 1f
     FAIL_LOOP
 1:
+
+    # TODO: Add AEX Notify checkpoint verification (if exception during AEX Notify mitigations,
+    #       then jump to AEX Notify mitigations' beginning to perform them again).
 
     # Beware of races between host signal delivery and handling RSP in this entry code. Consider
     # the following scenario:
@@ -263,7 +266,9 @@ enclave_entry:
 
     # We are interrupted during the never-returning OCALL_EXIT. Because the thread is going to exit
     # anyway, we can ignore this exception.
-    jmp .Lcssa1_exception_eexit
+    movq %rdx, %rbx    # upon EENTER the exit address was in RDX, mov it to RBX for EEXIT
+    movq $EEXIT, %rax
+    ENCLU
 
 .Lcssa1_exception_during_ocall_flows:
     # At this point, we are in the stage-1 exception handler (CSSA=1) and
@@ -543,8 +548,8 @@ enclave_entry:
     movq %rdi, SGX_GPR_RIP(%rbx)
 
     # copy the whole SSA[0].XSAVE region to the CPU context's XSAVE on stack;
-    # __restore_xregs / __save_xregs clobber RDX so need to stash it in RBX
-    movq %rdx, %rbx
+    # __restore_xregs / __save_xregs clobber RDX so need to stash it in R10
+    movq %rdx, %r10
     movq %gs:SGX_SSA, %rdi
     leaq 1f(%rip), %r11
     jmp __restore_xregs
@@ -553,19 +558,51 @@ enclave_entry:
     leaq 2f(%rip), %r11
     jmp __save_xregs
 2:
-    movq %rbx, %rdx
+    movq %r10, %rdx
 
 .Lcssa1_exception_eexit:
-    # .Lcssa0_ocall_or_cssa1_exception_eexit has an ABI that uses RSI, RDI, RSP; clear the relevant
-    # regs (note that stage-1 handler didn't clobber RSP -- which contains an untrusted pointer to
-    # untrusted-runtime stack -- but this flow doesn't read/write RSP at all so there is no need to
-    # sanitize/zero RSP)
-    xorq %rdi, %rdi
-    xorq %rsi, %rsi
+    # after restoring SSA[0] context into GPRs, we'll need to jump to the stage-2 handler, so
+    # memorize SSA[0].GPRSGX.RIP in an otherwise-unused R11
+    movq SGX_GPR_RIP(%rbx), %r11
 
-    # upon EENTER the exit address was in RDX, mov it to RBX for EEXIT
-    movq %rdx, %rbx
-    jmp .Lcssa0_ocall_or_cssa1_exception_eexit
+    # clear bit 0 within SSA[0].GPRSGX.AEXNOTIFY (so that ERESUME actually resumes stage-2 handler);
+    # we can do it unconditionally because legacy SGX has all AEXNOTIFY bits reserved (zeroed)
+    andb $0xfe, SGX_GPR_AEXNOTIFY(%rbx)
+
+    # restore context from SSA[0] (which was already modified above to jump to stage-2 C handler);
+    # note that XSAVE area (xregs) was already restored above, so only need to restore GPRs;
+    # note that we only restore those GPRs of SSA[0] that were used/modified by stage-1 handler;
+    # note that we don't care about SSA[0].GPRSGX.{URSP,URBP,EXITINFO,RESERVED,GSBASE}
+
+    leaq SGX_GPR_RFLAGS(%rbx), %rsp     # trick to restore RFLAGS directly from SSA[0].GPRSGX.RFLAGS
+    popfq
+
+    movq SGX_GPR_FSBASE(%rbx), %rdi
+    .byte 0xf3, 0x48, 0x0f, 0xae, 0xd7  # WRFSBASE %RDI
+
+    movq SGX_GPR_RDI(%rbx), %rdi
+    movq SGX_GPR_RSI(%rbx), %rsi
+    movq SGX_GPR_RDX(%rbx), %rdx
+    movq SGX_GPR_RCX(%rbx), %rcx     # not strictly needed
+    movq SGX_GPR_R8(%rbx),  %r8      # not strictly needed
+    movq SGX_GPR_R9(%rbx),  %r9      # not strictly needed
+    movq SGX_GPR_R10(%rbx), %r10     # not strictly needed
+    movq SGX_GPR_R12(%rbx), %r12     # not strictly needed
+    movq SGX_GPR_R13(%rbx), %r13     # not strictly needed
+    movq SGX_GPR_R14(%rbx), %r14     # not strictly needed
+    movq SGX_GPR_R15(%rbx), %r15     # not strictly needed
+    movq SGX_GPR_RBP(%rbx), %rbp     # not strictly needed
+    movq SGX_GPR_RSP(%rbx), %rsp
+    xorq %rbx, %rbx                  # for sanity
+
+    # go from SSA[1] to SSA[0] (more specifically, simply decrement CSSA from 1 to 0);
+    # must be careful after this ENCLU instruction because may be interrupted by new exceptions
+    movq $DECCSSA, %rax
+    ENCLU
+
+    # finally jump to the stage-2 C exception handler; beware of data races!
+    .Lfinalize_context_after_deccssa_inst0:
+    jmp *%r11
 
     .cfi_endproc
 
@@ -687,7 +724,7 @@ sgx_ocall:
     #     RBX:       exit target
     #     RSP:       untrusted stack
     #     RDI, RSI:  (optional) arguments to untrusted code
-.Lcssa0_ocall_or_cssa1_exception_eexit:
+.Lcssa0_ocall_eexit:
     .cfi_startproc
 
     # Clear "extended" state (FPU aka x87, SSE, AVX, ...).

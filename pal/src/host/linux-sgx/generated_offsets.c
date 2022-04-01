@@ -169,6 +169,7 @@ const struct generated_offset generated_offsets[] = {
 
     /* pal.h */
     DEFINE(PAL_EVENT_NO_EVENT, PAL_EVENT_NO_EVENT),
+    DEFINE(PAL_EVENT_INTERRUPTED, PAL_EVENT_INTERRUPTED),
     DEFINE(PAL_EVENT_NUM_BOUND, PAL_EVENT_NUM_BOUND),
 
     /* errno */
