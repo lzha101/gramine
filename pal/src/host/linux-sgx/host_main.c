@@ -777,6 +777,22 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info,
         goto out;
     }
 
+    bool sgx_aex_notify_enabled;
+    ret = toml_bool_in(manifest_root, "sgx.enable_aex_notify", /*defaultval=*/false,
+                       &sgx_aex_notify_enabled);
+    if (ret < 0) {
+        log_error("Cannot parse 'sgx.enable_aex_notify' (the value must be `true` or `false`)");
+        ret = -EINVAL;
+        goto out;
+    }
+
+    if(sgx_aex_notify_enabled && !is_aexnotify_supported())
+    {
+        log_error("Cannot load the enclave with AEX Notify enabled because the platform doesn't support AEX Notify");
+        ret = -EPERM;
+        goto out;
+    }
+
     ret = toml_string_in(manifest_root, "sgx.profile.enable", &profile_str);
     if (ret < 0) {
         log_error("Cannot parse 'sgx.profile.enable' "

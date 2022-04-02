@@ -64,6 +64,8 @@ int read_enclave_token(int token_file, sgx_arch_token_t* out_token);
 int create_dummy_enclave_token(sgx_sigstruct_t* sig, sgx_arch_token_t* out_token);
 int read_enclave_sigstruct(int sigfile, sgx_sigstruct_t* sig);
 
+bool is_aexnotify_supported(void);
+
 int create_enclave(sgx_arch_secs_t* secs, sgx_arch_token_t* token);
 
 int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, unsigned long size,
