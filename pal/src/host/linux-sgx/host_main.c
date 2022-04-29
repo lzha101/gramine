@@ -524,8 +524,9 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                 gs->heap_min = (void*)enclave_heap_min;
                 gs->heap_max = (void*)pal_area->addr;
                 gs->thread = NULL;
-                /* below field is used by AEX Notify (counter of AEXs) */
+                /* below fields are used by AEX Notify (counter of AEXs, temp sp for aex checkpoint) */
                 gs->aex_counter = 0;
+                gs->tmp_aex_rsp = 0;
             }
         } else if (areas[i].data_src == TCS) {
             for (uint32_t t = 0; t < enclave->thread_num; t++) {

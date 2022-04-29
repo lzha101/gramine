@@ -1,3 +1,22 @@
+
+    .data
+    .align 0x1000   /* 4KB */
+c3_cache:
+    .space 0x1000 /* 4KB */
+
+    .data
+entropy_cache:
+    .word 0x0
+    .word 0x0
+    .word 0x0
+    .word 0x0
+
+    .data
+remaining_entropy:
+    .word 0x0
+    .word 0x0
+
+
 # This file contains in-enclave flows -- upon EENTER and for EEXIT:
 #
 #     - First-time enclave entry ECALLs (label prefix `cssa0_ecall_`):
@@ -45,6 +64,8 @@
 
 #include "sgx_arch.h"
 #include "asm-offsets.h"
+
+    .text
 
 # In some cases, like bogus parameters passed to enclave_entry, it's tricky to return cleanly
 # (passing the correct return address to EEXIT, OCALL_EXIT can be interrupted, etc.). Since those
@@ -236,8 +257,15 @@ enclave_entry:
     FAIL_LOOP
 1:
 
-    # TODO: Add AEX Notify checkpoint verification (if exception during AEX Notify mitigations,
+    # Add AEX Notify checkpoint verification (if exception during AEX Notify mitigations,
     #       then jump to AEX Notify mitigations' beginning to perform them again).
+    # TODO: Add the check for whether AEX notify enabled or not.
+    #  case 1: g_aex_notify_enabled is true, we need to check whether %gs:SGX_TMP_AEX_RSP is 0
+    #  case2 : g_aex_notify_enabled is false, it indicates the AEX mitigation is not applied and interrupted.
+    #          So we need to restore the rsp and jump to that label.
+    movq %gs:SGX_TMP_AEX_RSP, %rsi
+    cmp $0, %rsi
+    jne _prepare_for_apply_mitigation
 
     # Beware of races between host signal delivery and handling RSP in this entry code. Consider
     # the following scenario:
@@ -449,7 +477,7 @@ enclave_entry:
     movq %gs:SGX_SIG_STACK_HIGH, %rax
     addq %gs:SGX_SIG_STACK_LOW, %rax
     shrq $1, %rax
-    cmp %rax, %rsi
+    cmp %rax, %rsi        # rsi - sp on sig_stack
     jae 1f
     FAIL_LOOP
 1:
@@ -466,6 +494,7 @@ enclave_entry:
     xchgq %rdi, SGX_GPR_RDI(%rbx)
     movq %rdi, SGX_CPU_CONTEXT_RDI(%rsi)
 
+    # sgx_cpu_context = sgx_gpr
     # Copy the rest of SSA[0].GPRSGX to the CPU context on the stack
     movq SGX_GPR_RAX(%rbx), %rdi
     movq %rdi, SGX_CPU_CONTEXT_RAX(%rsi)
@@ -531,7 +560,7 @@ enclave_entry:
     # 16)B alignment on function entry (due to implicit push of RIP). Since we already aligned XSAVE
     # area above, this requirement is satisfied.
     subq $8, %rsi
-    movq %rsi, SGX_GPR_RSP(%rbx)
+    movq %rsi, SGX_GPR_RSP(%rbx)   # GPR0.RSP points to the sig_stack sp for cssa1 exception handling
 
     # clear SSA.GPRSGX.EXITINFO; we used it to identify HW exception (if any), and a scenario is
     # possible where the same SSA is re-used to handle more signals that arrive right after this
@@ -838,7 +867,7 @@ sgx_ocall:
     .type _restore_sgx_context, @function
 _restore_sgx_context:
     .cfi_startproc
-    xchgq %rdi, %rsi
+    xchgq %rdi, %rsi   # rsi - uc, rdi - xsave_area
     callq restore_xregs
 
     movq %rsi, %r15
@@ -860,9 +889,11 @@ _restore_sgx_context:
     movq SGX_CPU_CONTEXT_R14(%r15), %r14
     # R15 will be restored below
 
-    leaq SGX_CPU_CONTEXT_RFLAGS(%r15), %rsp
+    leaq SGX_CPU_CONTEXT_RFLAGS(%r15), %rsp   # these are stored in the sig_stack as the cpu_context
     popfq
 
+    # clear %gs:SGX_TMP_AEX_RSP to invalidate the checkpoint
+    movq $0, %gs:SGX_TMP_AEX_RSP
     # See the comment at .Lcssa1_exception_during_enclave_run.
     #
     # The use of SGX_TMP_RIP (pal_enclave_tcb::tmp_rip per-enclave-thread field) must be atomic.
@@ -898,6 +929,124 @@ _restore_sgx_context:
 .Lrestore_sgx_context_inst2:
     jmp *%gs:SGX_TMP_RIP
     .cfi_endproc
+
+
+    # This code will be executed only when the AEX notify default handler is interrupted by AEX
+_prepare_for_apply_mitigation:
+    movq %gs:SGX_TMP_AEX_RSP, %rsp
+    popq %rsi
+    popq %rdi
+    movq $EDECCSSA, %rax
+    ENCLU
+	
+    # noreturn void _apply_mitigation_and_restore_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE* xsave_area)
+    # This function will firstly apply the AEX mitigation and then restore the cpu context and continue execution.
+    .global _apply_mitigation_and_restore_sgx_context
+    .type _apply_mitigation_and_restore_sgx_context, @function
+_apply_mitigation_and_restore_sgx_context:
+   .cfi_startproc
+    push %rdi    # rdi- uc
+    push %rsi    # rsi - xsave_area
+	 
+    movq %rsp, %gs:SGX_TMP_AEX_RSP    # store current sp as a checkpoint
+
+    # increase aexcounter
+    # TODO do we need to make it atomically?
+    movq %gs:SGX_AEX_COUNTER, %rax
+    addq $1, %rax
+    movq %rax, %gs:SGX_AEX_COUNTER
+  
+    # start sgx_step mitigation
+
+    # RBX = RSP
+    movq SGX_CPU_CONTEXT_RSP(%rdi), %rbx
+    #RDI: pointer to the first byte of the code page
+    mov SGX_CPU_CONTEXT_RIP(%rdi), %rdi # rdi: rip
+    shr $12, %rdi
+    shl $12, %rdi
+    # RBX = RSP &~0x0fff
+    shr  $12, %rbx
+    shl  $12, %rbx
+    # rdx = (rsp & ~0x0fff) + 0x1000
+    mov  %rbx, %rdx
+    add  $0x1000, %rdx
+
+    #Step 0: Look up the code page in the c3 cache
+    mov %rdi, %rax
+    leaq c3_cache(%rip), %rsi
+    #lea_pic c3_cache, %rsi
+    jmp  .search_c3
+.search_next_page:
+    add $0x1000, %rax
+.search_c3:
+    mov %rax, %rcx
+    shr  $11, %rcx
+    and $0x0ffe, %rcx
+    movzxw (%rsi, %rcx), %rcx
+    # Check if the c3 cache already consists of a value of 0x1000
+    # If so, that means there are no c3 in the page, so we search next page instead
+    cmp $0x1000, %rcx
+    je  .search_next_page
+    or   %rax, %rcx
+    cmpb  $0xc3, (%rcx)
+    je    .random_delay
+	 
+    # begin looking for C3 in the page
+    xor   %rcx, %rcx
+1:
+    or %rax, %rcx
+    cmpb $0xc3, (%rcx)
+    je .found
+    inc %rcx
+    cmp $0x1000, %rcx
+    jne 1b
+.found:
+    shr $11, %rax
+    and $0x0ffe, %rax
+    movw %cx, (%rsi, %rax)
+    mov  %rdi, %rax
+    jmp   .search_c3
+
+    # TODO enable aex_notify
+.random_delay:
+    mov %rcx, %rax
+    # step 1: inject random cycle noise
+    lea entropy_cache(%rip), %rcx
+    shr $1, (%rcx)
+    jnc .dec_entropy
+    # Inline spin for N cycles
+    mov $100, %rsi # N = 100
+.inline_spin:
+    dec %rsi
+    jnz .inline_spin
+.dec_entropy:
+    lea remaining_entropy(%rip), %rsi
+    decl (%rsi)
+    jnz .warm_caches
+    rdrand %rsi
+    mov %rsi, (%rcx)
+ 
+    # step 2: load all working set cache lines
+.warm_caches:
+    mov $0x1000, %rcx
+    sub $0x40, %rcx
+2:
+    movl (%rdi, %rcx), %esi
+    movl (%rbx, %rcx), %esi
+    sub $0x40, %rcx
+    jns 2b  # loops 64 times
+    xor %rsi, %rsi
+.warm_tlbs_and_perms:
+    call %rax
+    or  %rsi, (%rbx)
+    inc     %rcx
+    jnz     .warm_tlbs_and_perms  # loops 64 times
+
+    pop %rsi 
+    pop %rdi
+    jmp _restore_sgx_context
+    .cfi_endproc
+
 
 
     # void __save_xregs(PAL_XREGS_STATE* xsave_area)
