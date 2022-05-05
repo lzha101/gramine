@@ -1007,8 +1007,11 @@ _apply_mitigation_and_restore_sgx_context:
     mov  %rdi, %rax
     jmp   .search_c3
 
-    # TODO enable aex_notify
 .random_delay:
+    # Before apply mitigation, enable aex_notify first
+    movq %gs:SGX_GPR, %rax
+    or $0x1, SGX_GPR_AEXNOTIFY(%rax)
+
     mov %rcx, %rax
     # step 1: inject random cycle noise
     lea entropy_cache(%rip), %rcx
