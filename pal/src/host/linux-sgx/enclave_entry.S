@@ -945,8 +945,8 @@ _prepare_for_apply_mitigation:
     .type _apply_mitigation_and_restore_sgx_context, @function
 _apply_mitigation_and_restore_sgx_context:
    .cfi_startproc
-    push %rdi    # rdi- uc
-    push %rsi    # rsi - xsave_area
+    pushq %rdi    # rdi- uc
+    pushq %rsi    # rsi - xsave_area
 	 
     movq %rsp, %gs:SGX_TMP_AEX_RSP    # store current sp as a checkpoint
 
@@ -961,27 +961,27 @@ _apply_mitigation_and_restore_sgx_context:
     # RBX = RSP
     movq SGX_CPU_CONTEXT_RSP(%rdi), %rbx
     #RDI: pointer to the first byte of the code page
-    mov SGX_CPU_CONTEXT_RIP(%rdi), %rdi # rdi: rip
-    shr $12, %rdi
-    shl $12, %rdi
+    movq SGX_CPU_CONTEXT_RIP(%rdi), %rdi # rdi: rip
+    shrq $12, %rdi
+    shlq $12, %rdi
     # RBX = RSP &~0x0fff
-    shr  $12, %rbx
-    shl  $12, %rbx
+    shrq  $12, %rbx
+    shlq  $12, %rbx
     # rdx = (rsp & ~0x0fff) + 0x1000
-    mov  %rbx, %rdx
+    movq  %rbx, %rdx
     add  $0x1000, %rdx
 
     #Step 0: Look up the code page in the c3 cache
-    mov %rdi, %rax
+    movq %rdi, %rax
     leaq c3_cache(%rip), %rsi
     #lea_pic c3_cache, %rsi
     jmp  .search_c3
 .search_next_page:
-    add $0x1000, %rax
+    addq $0x1000, %rax
 .search_c3:
-    mov %rax, %rcx
-    shr  $11, %rcx
-    and $0x0ffe, %rcx
+    movq %rax, %rcx
+    shrq  $11, %rcx
+    andq $0x0ffe, %rcx
     movzxw (%rsi, %rcx), %rcx
     # Check if the c3 cache already consists of a value of 0x1000
     # If so, that means there are no c3 in the page, so we search next page instead
@@ -992,7 +992,7 @@ _apply_mitigation_and_restore_sgx_context:
     je    .random_delay
 	 
     # begin looking for C3 in the page
-    xor   %rcx, %rcx
+    xorq   %rcx, %rcx
 1:
     or %rax, %rcx
     cmpb $0xc3, (%rcx)
@@ -1004,49 +1004,49 @@ _apply_mitigation_and_restore_sgx_context:
     shr $11, %rax
     and $0x0ffe, %rax
     movw %cx, (%rsi, %rax)
-    mov  %rdi, %rax
+    movq  %rdi, %rax
     jmp   .search_c3
 
 .random_delay:
     # Before apply mitigation, enable aex_notify first
     movq %gs:SGX_GPR, %rax
-    or $0x1, SGX_GPR_AEXNOTIFY(%rax)
+    orq $0x1, SGX_GPR_AEXNOTIFY(%rax)
 
     mov %rcx, %rax
     # step 1: inject random cycle noise
-    lea entropy_cache(%rip), %rcx
-    shr $1, (%rcx)
+    leaq entropy_cache(%rip), %rcx
+    shrq $1, (%rcx)
     jnc .dec_entropy
     # Inline spin for N cycles
-    mov $100, %rsi # N = 100
+    movq $100, %rsi # N = 100
 .inline_spin:
-    dec %rsi
+    decq %rsi
     jnz .inline_spin
 .dec_entropy:
-    lea remaining_entropy(%rip), %rsi
+    leaq remaining_entropy(%rip), %rsi
     decl (%rsi)
     jnz .warm_caches
     rdrand %rsi
-    mov %rsi, (%rcx)
+    movq %rsi, (%rcx)
  
     # step 2: load all working set cache lines
 .warm_caches:
-    mov $0x1000, %rcx
-    sub $0x40, %rcx
+    movq $0x1000, %rcx
+    subq $0x40, %rcx
 2:
     movl (%rdi, %rcx), %esi
     movl (%rbx, %rcx), %esi
-    sub $0x40, %rcx
+    subq $0x40, %rcx
     jns 2b  # loops 64 times
-    xor %rsi, %rsi
+    xorq %rsi, %rsi
 .warm_tlbs_and_perms:
-    call %rax
+    call *%rax
     or  %rsi, (%rbx)
     inc     %rcx
     jnz     .warm_tlbs_and_perms  # loops 64 times
 
-    pop %rsi 
-    pop %rdi
+    popq %rsi 
+    popq %rdi
     jmp _restore_sgx_context
     .cfi_endproc
 
