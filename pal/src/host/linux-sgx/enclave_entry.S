@@ -590,6 +590,26 @@ enclave_entry:
     movq %r10, %rdx
 
 .Lcssa1_exception_eexit:
+    cmpl $1, SGX_GPR_AEXNOTIFY(%rbx)
+    je 1f
+
+    # AEX Notify is not set, stage-1 exception handler follows the normal EEXIT flow.
+
+    # .Lcssa0_ocall_or_cssa1_exception_eexit has an ABI that uses RSI, RDI, RSP; clear the relevant
+    # regs (note that stage-1 handler didn't clobber RSP -- which contains an untrusted pointer to
+    # untrusted-runtime stack -- but this flow doesn't read/write RSP at all so there is no need to
+    # sanitize/zero RSP)
+    xorq %rdi, %rdi
+    xorq %rsi, %rsi
+
+    # upon EENTER the exit address was in RDX, mov it to RBX for EEXIT
+    movq %rdx, %rbx
+    jmp .Lcssa0_ocall_or_cssa1_exception_eexit
+
+1:
+    # AEX Notify is set, stage-1 exception handler doesn't invoke EEXIT but instead the new EDECCSSA
+    # instruction.
+
     # after restoring SSA[0] context into GPRs, we'll need to jump to the stage-2 handler, so
     # memorize SSA[0].GPRSGX.RIP in an otherwise-unused R11
     movq SGX_GPR_RIP(%rbx), %r11
@@ -753,7 +773,7 @@ sgx_ocall:
     #     RBX:       exit target
     #     RSP:       untrusted stack
     #     RDI, RSI:  (optional) arguments to untrusted code
-.Lcssa0_ocall_eexit:
+.Lcssa0_ocall_or_cssa1_exception_eexit:
     .cfi_startproc
 
     # Clear "extended" state (FPU aka x87, SSE, AVX, ...).
