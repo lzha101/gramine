@@ -259,14 +259,16 @@ enclave_entry:
 
     # Add AEX Notify checkpoint verification (if exception during AEX Notify mitigations,
     #       then jump to AEX Notify mitigations' beginning to perform them again).
-    # TODO: Add the check for whether AEX notify enabled or not.
-    #  case 1: g_aex_notify_enabled is true, we need to check whether %gs:SGX_TMP_AEX_RSP is 0
-    #  case2 : g_aex_notify_enabled is false, it indicates the AEX mitigation is not applied and interrupted.
-    #          So we need to restore the rsp and jump to that label.
+    #  If g_aex_notify_enabled is true, we need to check whether %gs:SGX_TMP_AEX_RSP is 0.
+    #  Non-zero indicates the AEX mitigation is not applied completed and interrupt happens. 
+    #  In this case, we need to restore the rsp and perform AEX mitigation again.
+    cmpl $1, g_aex_notify_enabled(%rip)
+    jne 2f
     movq %gs:SGX_TMP_AEX_RSP, %rsi
     cmp $0, %rsi
     jne _prepare_for_apply_mitigation
 
+2:
     # Beware of races between host signal delivery and handling RSP in this entry code. Consider
     # the following scenario:
     #
@@ -590,7 +592,7 @@ enclave_entry:
     movq %r10, %rdx
 
 .Lcssa1_exception_eexit:
-    cmpl $1, SGX_GPR_AEXNOTIFY(%rbx)
+    cmpl $1, g_aex_notify_enabled(%rip)
     je 1f
 
     # AEX Notify is not set, stage-1 exception handler follows the normal EEXIT flow.
