@@ -1,20 +1,18 @@
 
+ // Generates code that consumes `n` cycles by repeatedly moving from register
+// `r` to itself.
+.macro CYCLE_DELAY n r
+    lea (\r), \r
+.if \n-1
+CYCLE_DELAY "(\n-1)" \r
+.endif
+.endm
+
     .data
     .align 0x1000   /* 4KB */
-c3_cache:
+.globl aex_notify_c3_cache
+aex_notify_c3_cache:
     .space 0x1000 /* 4KB */
-
-    .data
-entropy_cache:
-    .word 0x0
-    .word 0x0
-    .word 0x0
-    .word 0x0
-
-    .data
-remaining_entropy:
-    .word 0x0
-    .word 0x0
 
 
 # This file contains in-enclave flows -- upon EENTER and for EEXIT:
@@ -256,19 +254,6 @@ enclave_entry:
     jne 1f
     FAIL_LOOP
 1:
-
-    # Add AEX Notify checkpoint verification (if exception during AEX Notify mitigations,
-    #       then jump to AEX Notify mitigations' beginning to perform them again).
-    #  If g_aex_notify_enabled is true, we need to check whether %gs:SGX_TMP_AEX_RSP is 0.
-    #  Non-zero indicates the AEX mitigation is not applied completed and interrupt happens. 
-    #  In this case, we need to restore the rsp and perform AEX mitigation again.
-    cmpl $1, g_aex_notify_enabled(%rip)
-    jne 2f
-    movq %gs:SGX_TMP_AEX_RSP, %rsi
-    cmp $0, %rsi
-    jne _prepare_for_apply_mitigation
-
-2:
     # Beware of races between host signal delivery and handling RSP in this entry code. Consider
     # the following scenario:
     #
@@ -459,7 +444,8 @@ enclave_entry:
     #     EXINFO:             16 bytes
     #     sgx_cpu_context_t:  144 bytes
     #     XSAVE area:         PAL_XSTATE_ALIGN=64 bytes aligned
-    #     padding:            (if necessary)
+    #     sgx_cpu_context_t:  144 bytes (reserved for AEX mitigation)
+    #     padding:            (if necessary)    
     #     RED_ZONE:           (unless newly switching to signal stack)
     #
     # NOTE: there is no saved RIP on the stack (to return) because _PalExceptionHandler() calls
@@ -467,7 +453,7 @@ enclave_entry:
 
 #define STACK_PADDING_SIZE (PAL_FP_XSTATE_MAGIC2_SIZE + 8)
 #define STACK_FRAME_SUB \
-    (SGX_CPU_CONTEXT_SIZE + RED_ZONE_SIZE + STACK_PADDING_SIZE)
+    (SGX_CPU_CONTEXT_SIZE * 2 + RED_ZONE_SIZE + STACK_PADDING_SIZE)
 
 .Lon_signal_stack:
     movl g_xsave_size(%rip), %eax
@@ -652,7 +638,7 @@ enclave_entry:
     enclu
 
     # finally jump to the stage-2 C exception handler; beware of data races!
-    .Lfinalize_context_after_deccssa_inst0:
+.Lfinalize_context_after_deccssa_inst0:
     jmp *%r11
 
     .cfi_endproc
@@ -676,6 +662,7 @@ sgx_ocall:
     #   XSAVE area:
     #     xregs
     #   (padding)
+    #   sgx_cpu_context_t: for backup - to align with the stack layout of cssa1_exception
     # --- stack may be non-contiguous as we may switch the stack to signal stack
     #   previous RBX
     #   previous RBP
@@ -697,7 +684,7 @@ sgx_ocall:
 
 .Lon_signal_stack_ocall:
     movl g_xsave_size(%rip), %eax
-    addq $STACK_PADDING_SIZE, %rax
+    addq $STACK_PADDING_SIZE + SGX_CPU_CONTEXT_SIZE, %rax
     subq %rax, %rsp
     andq $~(PAL_XSTATE_ALIGN - 1), %rsp
 
@@ -755,6 +742,7 @@ sgx_ocall:
     # It's ok to use the untrusted stack and exit target below without checks since the processor
     # will ensure that after exiting enclave mode in-enclave memory can't be accessed.
 
+    # TODO - lzha101: do we need to disable AEXNotify before switch stack???
     movq %gs:SGX_USTACK, %rsp
 
 #ifdef DEBUG
@@ -914,8 +902,6 @@ _restore_sgx_context:
     leaq SGX_CPU_CONTEXT_RFLAGS(%r15), %rsp   # these are stored in the sig_stack as the cpu_context
     popfq
 
-    # clear %gs:SGX_TMP_AEX_RSP to invalidate the checkpoint
-    movq $0, %gs:SGX_TMP_AEX_RSP
     # See the comment at .Lcssa1_exception_during_enclave_run.
     #
     # The use of SGX_TMP_RIP (pal_enclave_tcb::tmp_rip per-enclave-thread field) must be atomic.
@@ -950,126 +936,6 @@ _restore_sgx_context:
     movq SGX_CPU_CONTEXT_RSP - SGX_CPU_CONTEXT_RIP(%rsp), %rsp
 .Lrestore_sgx_context_inst2:
     jmp *%gs:SGX_TMP_RIP
-    .cfi_endproc
-
-
-    # This code will be executed only when the AEX notify default handler is interrupted by AEX
-_prepare_for_apply_mitigation:
-    movq %gs:SGX_TMP_AEX_RSP, %rsp
-    popq %rsi
-    popq %rdi
-    movq $EDECCSSA, %rax
-    ENCLU
-	
-    # noreturn void _apply_mitigation_and_restore_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE* xsave_area)
-    # This function will firstly apply the AEX mitigation and then restore the cpu context and continue execution.
-    .global _apply_mitigation_and_restore_sgx_context
-    .type _apply_mitigation_and_restore_sgx_context, @function
-_apply_mitigation_and_restore_sgx_context:
-   .cfi_startproc
-    pushq %rdi    # rdi- uc
-    pushq %rsi    # rsi - xsave_area
-	 
-    movq %rsp, %gs:SGX_TMP_AEX_RSP    # store current sp as a checkpoint
-
-    # increase aexcounter
-    # TODO do we need to make it atomically?
-    movq %gs:SGX_AEX_COUNTER, %rax
-    addq $1, %rax
-    movq %rax, %gs:SGX_AEX_COUNTER
-  
-    # start sgx_step mitigation
-
-    # RBX = RSP
-    movq SGX_CPU_CONTEXT_RSP(%rdi), %rbx
-    #RDI: pointer to the first byte of the code page
-    movq SGX_CPU_CONTEXT_RIP(%rdi), %rdi # rdi: rip
-    shrq $12, %rdi
-    shlq $12, %rdi
-    # RBX = RSP &~0x0fff
-    shrq  $12, %rbx
-    shlq  $12, %rbx
-    # rdx = (rsp & ~0x0fff) + 0x1000
-    movq  %rbx, %rdx
-    add  $0x1000, %rdx
-
-    #Step 0: Look up the code page in the c3 cache
-    movq %rdi, %rax
-    leaq c3_cache(%rip), %rsi
-    #lea_pic c3_cache, %rsi
-    jmp  .search_c3
-.search_next_page:
-    addq $0x1000, %rax
-.search_c3:
-    movq %rax, %rcx
-    shrq  $11, %rcx
-    andq $0x0ffe, %rcx
-    movzxw (%rsi, %rcx), %rcx
-    # Check if the c3 cache already consists of a value of 0x1000
-    # If so, that means there are no c3 in the page, so we search next page instead
-    cmp $0x1000, %rcx
-    je  .search_next_page
-    or   %rax, %rcx
-    cmpb  $0xc3, (%rcx)
-    je    .random_delay
-	 
-    # begin looking for C3 in the page
-    xorq   %rcx, %rcx
-1:
-    or %rax, %rcx
-    cmpb $0xc3, (%rcx)
-    je .found
-    inc %rcx
-    cmp $0x1000, %rcx
-    jne 1b
-.found:
-    shr $11, %rax
-    and $0x0ffe, %rax
-    movw %cx, (%rsi, %rax)
-    movq  %rdi, %rax
-    jmp   .search_c3
-
-.random_delay:
-    # Before apply mitigation, enable aex_notify first
-    movq %gs:SGX_GPR, %rax
-    orq $0x1, SGX_GPR_AEXNOTIFY(%rax)
-
-    mov %rcx, %rax
-    # step 1: inject random cycle noise
-    leaq entropy_cache(%rip), %rcx
-    shrq $1, (%rcx)
-    jnc .dec_entropy
-    # Inline spin for N cycles
-    movq $100, %rsi # N = 100
-.inline_spin:
-    decq %rsi
-    jnz .inline_spin
-.dec_entropy:
-    leaq remaining_entropy(%rip), %rsi
-    decl (%rsi)
-    jnz .warm_caches
-    rdrand %rsi
-    movq %rsi, (%rcx)
- 
-    # step 2: load all working set cache lines
-.warm_caches:
-    movq $0x1000, %rcx
-    subq $0x40, %rcx
-2:
-    movl (%rdi, %rcx), %esi
-    movl (%rbx, %rcx), %esi
-    subq $0x40, %rcx
-    jns 2b  # loops 64 times
-    xorq %rsi, %rsi
-.warm_tlbs_and_perms:
-    call *%rax
-    or  %rsi, (%rbx)
-    inc     %rcx
-    jnz     .warm_tlbs_and_perms  # loops 64 times
-
-    popq %rsi 
-    popq %rdi
-    jmp _restore_sgx_context
     .cfi_endproc
 
 
@@ -1189,3 +1055,238 @@ __morestack:
 
     .cfi_endproc
 #endif
+
+    # noreturn void _apply_mitigation_and_restore_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE* xsave_area, 
+    #                                                         uintptr_t stp, uintptr_t dtp, uintptr_t ctp, uintptr_t c3_byte_address);
+    # Inputs:
+    #     rdi - uc
+    #     rsi - xsave_area
+    #     rdx - stack_tickle_pages
+    #     rcx - data_tickle_pages
+    #     r8 -  code_tickle_page
+    #     r9 -  c3 byte address
+    #
+    # This function will  apply the AEX mitigation, restore the cpu context and continue execution.
+    .global _apply_mitigation_and_restore_sgx_context
+    .type _apply_mitigation_and_restore_sgx_context, @function
+_apply_mitigation_and_restore_sgx_context:
+   .cfi_startproc
+
+    movq %rdx, %rbx
+    # restore xregs firstly
+    xchgq %rdi, %rsi   # rsi - uc, rdi - xsave_area
+    callq restore_xregs    
+    movq %rbx, %rdx
+
+	movq SGX_CPU_CONTEXT_RSP(%rsi), %rsp
+
+    movq  g_xsave_size(%rip), %rax
+    addq $SGX_CPU_CONTEXT_SIZE, %rax
+    
+    movq %rsi, %r15
+    addq g_xsave_size(%rip), %r15
+    addq $SGX_CPU_CONTEXT_SIZE, %r15 # rsi - uc, r15 - reserved uc
+
+    # increase aexcounter
+    # TODO do we need to make it atomically?
+    movq %gs:SGX_AEX_COUNTER, %rax
+    addq $1, %rax
+    movq %rax, %gs:SGX_AEX_COUNTER
+
+    movq SGX_CPU_CONTEXT_RIP(%rsi), %rax
+    movq %rsp, %r10
+    subq    $RED_ZONE_SIZE + 8, %r10  # save the 
+
+    # Check whether the last AEX occurred during the mitigation 
+    cmpb    $0xc3, (%rax)             # ZF=1 if interrupted c3 (ret)
+    cmovz   (%rsp), %rax              # rax: irq c3? caller rip : pre-irq rip
+    lea __ct_mitigation_end(%rip), %rbx
+    subq     %rax, %rbx
+    cmpq     $(__ct_mitigation_end - __ct_mitigation_begin + 1), %rbx
+    # CMP will set CF=1 (B) if the mitigation was interrupted, CF=0 (NB) otherwise
+    # If the mitigation was interrupt, restore the SP from reserved uc. Reason is we 
+    # change the SP by saving the return IP (Line 1112). So we need to correct the 
+    # SP if the mitigation was interrupt
+#    jnc L1
+#    nop
+# L1:    
+    cmovb   SGX_CPU_CONTEXT_RSP(%r15), %rsp
+    movq    %rsp, SGX_CPU_CONTEXT_RSP(%r15)
+
+    # If the mitigation was interrupted, restore the interrupted IP from the reserved uc context
+    movq    SGX_CPU_CONTEXT_RIP(%rsi), %rbx
+    cmovb   SGX_CPU_CONTEXT_RIP(%r15), %rbx
+    movq    %rbx, SGX_CPU_CONTEXT_RIP(%r15)  # save the IP to reserved_uc->ip
+    # Save the ip to pre-irq stack, skip the red zone
+    movq    %r10, %rsp
+    movq    %rbx, (%rsp)
+    # pushq   %rbx
+
+    # Copy RFLAGS onto the reserved stack area
+    movq     SGX_CPU_CONTEXT_RFLAGS(%rsi), %rax
+    movq     %rax, SGX_CPU_CONTEXT_RFLAGS(%r15)
+
+    # If the mitigation was interrupted, restore tickle parameters (rdx, rcx, r8, r9) from the the reserved uc.
+    cmovb  SGX_CPU_CONTEXT_RDX(%r15), %rdx
+    cmovb  SGX_CPU_CONTEXT_RCX(%r15), %rcx
+    cmovb  SGX_CPU_CONTEXT_R8(%r15), %r8
+    cmovb  SGX_CPU_CONTEXT_R9(%r15), %r9
+
+    movq   %rdx, SGX_CPU_CONTEXT_R10(%r15) # save rdx to reserved_uc->r10 (stack tickle pages)
+    movq   %rcx, SGX_CPU_CONTEXT_R11(%r15) # save rcx to reserved_uc->r11 (data tickle page)
+    movq   %r8, SGX_CPU_CONTEXT_R8(%r15)   # code tickle page
+    movq   %r9, SGX_CPU_CONTEXT_R9(%r15)   # c3 byte address
+
+# If the mitigation was not interrupted (the interrupt occured in the main flow),
+# then restore the registers from uc context
+    movq SGX_CPU_CONTEXT_RAX(%rsi), %rax
+    cmovb SGX_CPU_CONTEXT_RAX(%r15), %rax
+    movq %rax, SGX_CPU_CONTEXT_RAX(%r15) 
+
+    movq SGX_CPU_CONTEXT_RCX(%rsi), %rcx
+    movq SGX_CPU_CONTEXT_RDX(%rsi), %rdx
+    movq SGX_CPU_CONTEXT_RBX(%rsi), %rbx
+    movq SGX_CPU_CONTEXT_RBP(%rsi), %rbp
+    movq SGX_CPU_CONTEXT_RDI(%rsi), %rdi
+    movq SGX_CPU_CONTEXT_R8(%rsi), %r8
+    movq SGX_CPU_CONTEXT_R9(%rsi), %r9
+    movq SGX_CPU_CONTEXT_R10(%rsi), %r10    
+    movq SGX_CPU_CONTEXT_R11(%rsi), %r11
+    movq SGX_CPU_CONTEXT_R12(%rsi), %r12
+    movq SGX_CPU_CONTEXT_R13(%rsi), %r13
+    movq SGX_CPU_CONTEXT_R14(%rsi), %r14 
+    # use rax to save r15  
+    movq SGX_CPU_CONTEXT_R15(%rsi), %rax    
+    movq SGX_CPU_CONTEXT_RSI(%rsi), %rsi
+# If the mitigation was interrupted, restore registers from reserved uc context
+# rax has been handled above
+    cmovb SGX_CPU_CONTEXT_RCX(%r15), %rcx
+    cmovb SGX_CPU_CONTEXT_RDX(%r15), %rdx
+    cmovb SGX_CPU_CONTEXT_RBX(%r15), %rbx
+    cmovb SGX_CPU_CONTEXT_RBP(%r15), %rbp
+    cmovb SGX_CPU_CONTEXT_RSI(%r15), %rsi
+    cmovb SGX_CPU_CONTEXT_RDI(%r15), %rdi
+    cmovb SGX_CPU_CONTEXT_R15(%r15), %rax
+
+    movq %rcx, SGX_CPU_CONTEXT_RCX(%r15)
+    movq %rdx, SGX_CPU_CONTEXT_RDX(%r15)
+    movq %rbx, SGX_CPU_CONTEXT_RBX(%r15)
+    movq %rbp, SGX_CPU_CONTEXT_RBP(%r15)
+    movq %rdi, SGX_CPU_CONTEXT_RDI(%r15)
+    movq %rsi, SGX_CPU_CONTEXT_RSI(%r15)
+    movq %rax, SGX_CPU_CONTEXT_R15(%r15)   
+  
+# Restore rflags
+    leaq SGX_CPU_CONTEXT_RFLAGS(%r15), %rbx   # these are stored in the sig_stack as the cpu_context
+    xchg    %rbx, %rsp
+    popfq
+    xchg    %rbx, %rsp
+
+# Restore tickle addresses
+    movq SGX_CPU_CONTEXT_R8(%r15), %rsi  # code tickle page
+    movq SGX_CPU_CONTEXT_R9(%r15), %rdi  # c3 byte address
+    movq SGX_CPU_CONTEXT_R10(%r15), %rbp # stack tickle pages
+    movq SGX_CPU_CONTEXT_R11(%r15), %rdx # data tickle page
+
+
+
+# NOTHING AFTER THIS POINT CAN MODIFY EFLAGS/RFLAGS
+
+################################################################################
+# BEGIN MITIGATION CODE
+################################################################################
+
+#define MITIGATION_CODE_ALIGNMENT 0x200
+.align MITIGATION_CODE_ALIGNMENT
+
+# Enable AEX Notify
+.ct_enable_aexnotify:
+   # Before apply mitigation, enable aex_notify first
+#   movq %gs:SGX_GPR, %rax
+#   orq $0x1, SGX_GPR_AEXNOTIFY(%rax)
+
+    .global __ct_mitigation_begin
+__ct_mitigation_begin:
+# Step 1: Inject random cycle noise
+    movzx %sil, %rcx # The lowest byte in %xsi indicates whether cycles should be added
+    movb   $0, %sil
+    lfence
+    jrcxz  .ct_set_up_tickles
+    CYCLE_DELAY 20, %rax
+
+.ct_set_up_tickles:
+    lfence
+    movzx   %bpl, %rcx # The lowest byte in %rbp indicates whether a second stack page can be tickled
+    jrcxz   .ct_set_up_tickles_with_one_stack_page
+    movb     $0x00, %bpl
+    leaq     -0x1000(%rbp), %rbx
+    jmp .ct_warm_caches_and_tlbs
+.ct_set_up_tickles_with_one_stack_page:
+    leaq     0x08(%rbp), %rbx
+
+# Load all working set cache lines and warm the TLB entries
+.ct_warm_caches_and_tlbs:
+    movzx   %dl, %rcx # The lowest byte in %rdx indicates whether data_tickle_page can be written to
+    mov     $0x10, %dl # avoid sequencing uops, in case rbp and rdx alias
+    jrcxz   .ct_warm_caches_and_tlbs_data_read_pre
+
+# .ct_warm_caches_and_tlbs_data_write_pre:
+#    mov     $0x1000, %ecx
+# .align 0x10
+# .ct_warm_caches_and_tlbs_data_write:
+#    lea     -0x40(%ecx), %ecx
+#    call    *%rdi
+#    movl     (%rsi, %rcx), %eax
+#    movl     (%rbp, %rcx), %eax
+#    movl     %eax, (%rbp, %rcx)
+#    movl     (%rbx, %rcx), %eax
+#    movl     %eax, (%rbx, %rcx)
+#    movl     (%rdx, %rcx), %eax
+#    movl     %eax, (%rdx, %rcx)
+#    jrcxz   .ct_restore_state
+#    jmp     .ct_warm_caches_and_tlbs_data_write # loops 64 times
+
+# This block is identical to the previous one, except that it doesn't write
+# to data_tickle_page.
+.ct_warm_caches_and_tlbs_data_read_pre:
+    movl     $0x1000, %ecx
+.align 0x10
+.ct_warm_caches_and_tlbs_data_read:
+    lea     -0x40(%ecx), %ecx
+    call    *%rdi
+    movl     (%rsi, %rcx), %eax
+    movl     (%rbp, %rcx), %eax
+    movl     %eax, (%rbp, %rcx)
+    movl     (%rbx, %rcx), %eax
+    movl     %eax, (%rbx, %rcx)
+    movl     (%rdx, %rcx), %eax
+    jrcxz   .ct_restore_state
+    jmp     .ct_warm_caches_and_tlbs_data_read # loops 64 times
+
+.ct_restore_state:
+    movq     SGX_CPU_CONTEXT_RDI(%r15), %rdi
+    movq     SGX_CPU_CONTEXT_RSI(%r15), %rsi
+    movq     SGX_CPU_CONTEXT_RBP(%r15), %rbp
+    movq     SGX_CPU_CONTEXT_RBX(%r15), %rbx
+    movq     SGX_CPU_CONTEXT_RDX(%r15), %rdx
+    movq     SGX_CPU_CONTEXT_RCX(%r15), %rcx
+    movq %gs:SGX_GPR, %rax
+    orq $0x1, SGX_GPR_AEXNOTIFY(%rax)
+    movq     SGX_CPU_CONTEXT_RAX(%r15), %rax
+    movq     SGX_CPU_CONTEXT_RSP(%r15), %rsp
+    movq     SGX_CPU_CONTEXT_R15(%r15), %r15
+__ct_mitigation_end:
+    jmp      *-RED_ZONE_SIZE - 8(%rsp)   # TODO - can I restore this field in this stack?
+   .cfi_endproc
+
+.global __ct_mitigation_ret
+__ct_mitigation_ret:
+    ret
+
+.ct_aexnotify_end:
+
+.sect   _to_be_discarded, "e", @nobits
+.space MITIGATION_CODE_ALIGNMENT - (.ct_aexnotify_end - .ct_enable_aexnotify)
+.previous
+
+
