@@ -527,6 +527,8 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                 /* below fields are used by AEX Notify (counter of AEXs, temp sp for aex checkpoint) */
                 gs->aex_counter = 0;
                 gs->tmp_aex_rsp = 0;
+                gs->ready_for_aex_notify = 0;
+                gs->aex_notify_flag = 0;
             }
         } else if (areas[i].data_src == TCS) {
             for (uint32_t t = 0; t < enclave->thread_num; t++) {

@@ -742,7 +742,12 @@ sgx_ocall:
     # It's ok to use the untrusted stack and exit target below without checks since the processor
     # will ensure that after exiting enclave mode in-enclave memory can't be accessed.
 
-    # TODO - lzha101: do we need to disable AEXNotify before switch stack???
+    cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
+    je 1f
+    movq %gs:SGX_GPR, %rbx
+    andb $0xfe, SGX_GPR_AEXNOTIFY(%rbx)
+    movq $0x1, %gs:SGX_AEX_NOTIFY_FLAG  # set aexnotify_flag
+1:
     movq %gs:SGX_USTACK, %rsp
 
 #ifdef DEBUG
@@ -826,7 +831,16 @@ sgx_ocall:
     je 1f
     .byte 0xf3, 0x48, 0x0f, 0xae, 0xd3       # WRFSBASE %RBX
 1:
-
+    # check if it is ready to enable AEX-Notify
+    cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
+    je 1f
+    # check if aexnotify is disabled during ocall-exit
+    cmpq $0, %gs:SGX_AEX_NOTIFY_FLAG
+    je 1f
+    movq $0, %gs:SGX_AEX_NOTIFY_FLAG
+    movq %gs:SGX_GPR, %rdi
+    orb $0x1, SGX_GPR_AEXNOTIFY(%rdi)
+1:
     # check if there was an event (async signal from host) during this OCALL
     cmpq $PAL_EVENT_NO_EVENT, %rsi
     je 1f

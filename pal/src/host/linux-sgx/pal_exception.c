@@ -156,7 +156,7 @@ noreturn static void restore_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE*
     uintptr_t sig_stack_high = GET_ENCLAVE_TCB(sig_stack_high);
     asan_unpoison_current_stack(sig_stack_low, sig_stack_high - sig_stack_low);
 #endif
-    if (g_aex_notify_enabled)
+    if (g_aex_notify_enabled && GET_ENCLAVE_TCB(ready_for_aex_notify))
         apply_mitigation_handler_and_restore_sgx_context(uc, xregs_state);
 //        _restore_sgx_context(uc, xregs_state);
     else
