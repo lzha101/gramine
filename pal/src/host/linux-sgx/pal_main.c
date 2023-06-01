@@ -820,10 +820,11 @@ noreturn void pal_linux_main(void* uptr_libpal_uri, size_t libpal_uri_len, void*
     }
     pal_set_tcb_stack_canary(stack_protector_canary);
 
-    init_aex_notify_for_thread();
 
     assert(!g_pal_linuxsgx_state.enclave_initialized);
     g_pal_linuxsgx_state.enclave_initialized = true;
+
+    init_aex_notify_for_thread();
 
     /* call main function */
     pal_main(instance_id, parent, first_thread, arguments, environments, post_callback);

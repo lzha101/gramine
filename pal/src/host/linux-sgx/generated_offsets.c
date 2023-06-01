@@ -106,7 +106,6 @@ const struct generated_offset generated_offsets[] = {
     OFFSET(SGX_HEAP_MIN, pal_enclave_tcb, heap_min),
     OFFSET(SGX_HEAP_MAX, pal_enclave_tcb, heap_max),
     OFFSET(SGX_CLEAR_CHILD_TID, pal_enclave_tcb, clear_child_tid),
-    OFFSET(SGX_TMP_AEX_RSP, pal_enclave_tcb, tmp_aex_rsp),
     OFFSET(SGX_AEX_COUNTER, pal_enclave_tcb, aex_counter),
     OFFSET(SGX_READY_FOR_AEX_NOTIFY, pal_enclave_tcb, ready_for_aex_notify),
     OFFSET(SGX_AEX_NOTIFY_FLAG, pal_enclave_tcb, aex_notify_flag),

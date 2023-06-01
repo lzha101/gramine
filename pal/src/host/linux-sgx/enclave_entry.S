@@ -604,7 +604,7 @@ enclave_entry:
 
     # clear bit 0 within SSA[0].GPRSGX.AEXNOTIFY (so that ERESUME actually resumes stage-2 handler);
     # we can do it unconditionally because legacy SGX has all AEXNOTIFY bits reserved (zeroed)
-    andb $0xfe, SGX_GPR_AEXNOTIFY(%rbx)
+    movb $0, SGX_GPR_AEXNOTIFY(%rbx)
 
     # restore context from SSA[0] (which was already modified above to jump to stage-2 C handler);
     # note that XSAVE area (xregs) was already restored above, so only need to restore GPRs;
@@ -745,7 +745,9 @@ sgx_ocall:
     cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
     je 1f
     movq %gs:SGX_GPR, %rbx
-    andb $0xfe, SGX_GPR_AEXNOTIFY(%rbx)
+    cmpb $0, SGX_GPR_AEXNOTIFY(%rbx)
+    je 1f
+    movb $0, SGX_GPR_AEXNOTIFY(%rbx)
     movq $0x1, %gs:SGX_AEX_NOTIFY_FLAG  # set aexnotify_flag
 1:
     movq %gs:SGX_USTACK, %rsp
@@ -839,7 +841,7 @@ sgx_ocall:
     je 1f
     movq $0, %gs:SGX_AEX_NOTIFY_FLAG
     movq %gs:SGX_GPR, %rdi
-    orb $0x1, SGX_GPR_AEXNOTIFY(%rdi)
+    movb $0x1, SGX_GPR_AEXNOTIFY(%rdi)
 1:
     # check if there was an event (async signal from host) during this OCALL
     cmpq $PAL_EVENT_NO_EVENT, %rsi
@@ -1102,10 +1104,7 @@ _apply_mitigation_and_restore_sgx_context:
     addq $SGX_CPU_CONTEXT_SIZE, %r15 # rsi - uc, r15 - reserved uc
 
     # increase aexcounter
-    # TODO do we need to make it atomically?
-    movq %gs:SGX_AEX_COUNTER, %rax
-    addq $1, %rax
-    movq %rax, %gs:SGX_AEX_COUNTER
+    lock incq %gs:SGX_AEX_COUNTER
 
     movq SGX_CPU_CONTEXT_RIP(%rsi), %rax
     movq %rsp, %r10
@@ -1132,8 +1131,13 @@ _apply_mitigation_and_restore_sgx_context:
     cmovb   SGX_CPU_CONTEXT_RIP(%r15), %rbx
     movq    %rbx, SGX_CPU_CONTEXT_RIP(%r15)  # save the IP to reserved_uc->ip
     # Save the ip to pre-irq stack, skip the red zone
+#    movq    %rbx, (%r10)
+  #  xchg    %r10, %rsp
+  #  movq    %rbx, (%rsp)
+  #  xchg    %r10, %rsp    
     movq    %r10, %rsp
     movq    %rbx, (%rsp)
+   
     # pushq   %rbx
 
     # Copy RFLAGS onto the reserved stack area
@@ -1141,8 +1145,8 @@ _apply_mitigation_and_restore_sgx_context:
     movq     %rax, SGX_CPU_CONTEXT_RFLAGS(%r15)
 
     # If the mitigation was interrupted, restore tickle parameters (rdx, rcx, r8, r9) from the the reserved uc.
-    cmovb  SGX_CPU_CONTEXT_RDX(%r15), %rdx
-    cmovb  SGX_CPU_CONTEXT_RCX(%r15), %rcx
+    cmovb  SGX_CPU_CONTEXT_R10(%r15), %rdx
+    cmovb  SGX_CPU_CONTEXT_R11(%r15), %rcx
     cmovb  SGX_CPU_CONTEXT_R8(%r15), %r8
     cmovb  SGX_CPU_CONTEXT_R9(%r15), %r9
 
@@ -1216,8 +1220,8 @@ _apply_mitigation_and_restore_sgx_context:
 # Enable AEX Notify
 .ct_enable_aexnotify:
    # Before apply mitigation, enable aex_notify first
-#   movq %gs:SGX_GPR, %rax
-#   orq $0x1, SGX_GPR_AEXNOTIFY(%rax)
+   movq %gs:SGX_GPR, %rax
+   movb $0x1, SGX_GPR_AEXNOTIFY(%rax)
 
     .global __ct_mitigation_begin
 __ct_mitigation_begin:
@@ -1284,8 +1288,8 @@ __ct_mitigation_begin:
     movq     SGX_CPU_CONTEXT_RBX(%r15), %rbx
     movq     SGX_CPU_CONTEXT_RDX(%r15), %rdx
     movq     SGX_CPU_CONTEXT_RCX(%r15), %rcx
-    movq %gs:SGX_GPR, %rax
-    orq $0x1, SGX_GPR_AEXNOTIFY(%rax)
+#    movq %gs:SGX_GPR, %rax
+#    movb $0x1, SGX_GPR_AEXNOTIFY(%rax)
     movq     SGX_CPU_CONTEXT_RAX(%r15), %rax
     movq     SGX_CPU_CONTEXT_RSP(%r15), %rsp
     movq     SGX_CPU_CONTEXT_R15(%r15), %r15
