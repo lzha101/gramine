@@ -139,11 +139,17 @@ sgx_raise:
 
     # below logic is the same as for sgx_ecall(), see comments for that function
     pushq %rbx
+    .cfi_adjust_cfa_offset 8
     pushq %rbp
+    .cfi_adjust_cfa_offset 8
     pushq %r12
+    .cfi_adjust_cfa_offset 8
     pushq %r13
+    .cfi_adjust_cfa_offset 8
     pushq %r14
+    .cfi_adjust_cfa_offset 8
     pushq %r15
+    .cfi_adjust_cfa_offset 8
 
     lock incq %gs:PAL_HOST_TCB_EENTER_CNT
     movq %gs:PAL_HOST_TCB_TCS, %rbx
@@ -158,11 +164,17 @@ sgx_raise_eenter_instr:
 
 .Lafter_resume:
     popq %r15
+    .cfi_adjust_cfa_offset -8
     popq %r14
+    .cfi_adjust_cfa_offset -8
     popq %r13
+    .cfi_adjust_cfa_offset -8
     popq %r12
+    .cfi_adjust_cfa_offset -8
     popq %rbp
+    .cfi_adjust_cfa_offset -8
     popq %rbx
+    .cfi_adjust_cfa_offset -8
     retq
     .cfi_endproc
 

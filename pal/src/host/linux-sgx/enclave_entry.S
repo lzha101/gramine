@@ -428,6 +428,33 @@ enclave_entry:
 .Lcssa1_exception_rewire_ssa0_to_handler:
     movq SGX_GPR_RSP(%rbx), %rsi
 
+    cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
+    je 1f
+    # Mitigation handler uses the sig_stack. If an interrupt happens in
+    # the mitigation handler before the stack switch to the previous stack, we 
+    # need to use the sp from previous interrupt to determine how to allocate
+    # on sig_stack
+    movq  SGX_GPR_RIP(%rbx), %rax  
+    cmpb  $0xc3, (%rax)    # ZF=1 if interrupted c3 (ret)
+    jnz .Lcheck_aex_in_mitigation
+    # If interrupts on c3, check whether sp is on the sig_stack. If yes, it means the mitigation may 
+    # occur during the call instruction in mitigation handler. In this case, retrieve the IP from stack
+    # SSA0.rsp may not be valid so we cannot directly access it.
+    CHECK_IF_SIGNAL_STACK_IS_USED %rsi, .Lretrieve_ip, .Lcheck_aex_in_mitigation
+.Lretrieve_ip:
+    movq (%rsi), %rax
+
+.Lcheck_aex_in_mitigation:
+    lea .Lct_restore_sgx_context_inst0(%rip), %rsi
+    subq %rax, %rsi
+    cmpq $(.Lct_restore_sgx_context_inst0 - __ct_mitigation_begin + 1), %rsi
+    movq SGX_GPR_RSP(%rbx), %rsi
+    jae 1f
+    # interrupt happens in AEX mitigation handler.
+    # retrive the SP from reserved cpu context.
+    movq SGX_GPR_R15(%rbx), %rax
+    movq SGX_CPU_CONTEXT_RSP(%rax), %rsi
+1:
     CHECK_IF_SIGNAL_STACK_IS_USED %rsi, .Lon_signal_stack, .Lout_of_signal_stack
 
 .Lout_of_signal_stack:
@@ -444,14 +471,16 @@ enclave_entry:
     #     EXINFO:             16 bytes
     #     sgx_cpu_context_t:  144 bytes
     #     XSAVE area:         PAL_XSTATE_ALIGN=64 bytes aligned
+    #     xstate magic:       For PAL_FP_XSTATE_MAGIC2
     #     sgx_cpu_context_t:  144 bytes (reserved for AEX mitigation)
+    #     8 bytes :           For AEX handler usage
     #     padding:            (if necessary)    
     #     RED_ZONE:           (unless newly switching to signal stack)
     #
     # NOTE: there is no saved RIP on the stack (to return) because _PalExceptionHandler() calls
     #       _restore_sgx_context().
 
-#define STACK_PADDING_SIZE (PAL_FP_XSTATE_MAGIC2_SIZE + 8)
+#define STACK_PADDING_SIZE (PAL_FP_XSTATE_MAGIC2_SIZE + 8 + 8*2)
 #define STACK_FRAME_SUB \
     (SGX_CPU_CONTEXT_SIZE * 2 + RED_ZONE_SIZE + STACK_PADDING_SIZE)
 
@@ -677,6 +706,15 @@ sgx_ocall:
     pushq %rbx
     .cfi_offset %rbx, -24
 
+    # Disable aex-notify before stack switch
+    cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
+    je 1f
+    movq %gs:SGX_GPR, %rax
+    cmpb $0, SGX_GPR_AEXNOTIFY(%rax)
+    je 1f
+    movb $0, SGX_GPR_AEXNOTIFY(%rax)
+    movq $0x1, %gs:SGX_AEX_NOTIFY_FLAG  # set aexnotify_flag
+1:
     CHECK_IF_SIGNAL_STACK_IS_USED %rsp, .Lon_signal_stack_ocall, .Lout_of_signal_stack_ocall
 
 .Lout_of_signal_stack_ocall:
@@ -684,6 +722,10 @@ sgx_ocall:
 
 .Lon_signal_stack_ocall:
     movl g_xsave_size(%rip), %eax
+    # The reason we add the other SGX_CPU_CONTEXT_SIZE on the signal stack is to align with 
+    # cssa1 exception layout. Consider the case that an interrupt happens during 
+    # sgx_ocall/Lcssa0_ocall_return assembly code. It will trigger Lcssa1_exception_during_ocall_flows.
+    # If AEX Notify is enabled, it requires a reserved cpu context in the mitigion code.
     addq $STACK_PADDING_SIZE + SGX_CPU_CONTEXT_SIZE, %rax
     subq %rax, %rsp
     andq $~(PAL_XSTATE_ALIGN - 1), %rsp
@@ -741,14 +783,6 @@ sgx_ocall:
     #
     # It's ok to use the untrusted stack and exit target below without checks since the processor
     # will ensure that after exiting enclave mode in-enclave memory can't be accessed.
-
-    cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
-    je 1f
-    movq %gs:SGX_GPR, %rbx
-    cmpb $0, SGX_GPR_AEXNOTIFY(%rbx)
-    je 1f
-    movb $0, SGX_GPR_AEXNOTIFY(%rbx)
-    movq $0x1, %gs:SGX_AEX_NOTIFY_FLAG  # set aexnotify_flag
 1:
     movq %gs:SGX_USTACK, %rsp
 
@@ -833,6 +867,14 @@ sgx_ocall:
     je 1f
     .byte 0xf3, 0x48, 0x0f, 0xae, 0xd3       # WRFSBASE %RBX
 1:
+    # check if there was an event (async signal from host) during this OCALL
+    cmpq $PAL_EVENT_NO_EVENT, %rsi
+    je 1f
+    cmpq $PAL_EVENT_NUM_BOUND, %rsi
+    jb 2f
+
+1:
+#if 1    
     # check if it is ready to enable AEX-Notify
     cmpq $0, %gs:SGX_READY_FOR_AEX_NOTIFY
     je 1f
@@ -842,13 +884,7 @@ sgx_ocall:
     movq $0, %gs:SGX_AEX_NOTIFY_FLAG
     movq %gs:SGX_GPR, %rdi
     movb $0x1, SGX_GPR_AEXNOTIFY(%rdi)
-1:
-    # check if there was an event (async signal from host) during this OCALL
-    cmpq $PAL_EVENT_NO_EVENT, %rsi
-    je 1f
-    cmpq $PAL_EVENT_NUM_BOUND, %rsi
-    jb 2f
-
+#endif
 1:
     # there was no event, simply call _restore_sgx_context(uc, xsave_area)
     movq %rsp, %rdi
@@ -860,6 +896,8 @@ sgx_ocall:
 
 2:
     # there was some event, call _PalHandleExternalEvent(event, uc, xregs_state)
+    # Note we don't check AEX-Notify here. If we disable it during ocall-exit and 
+    # the execution comes below code, the aex-notify will be enabled after event handling
 
     # clear the Alignment Check flag to prevent #AC-fault side channel
     pushfq
@@ -1094,57 +1132,53 @@ _apply_mitigation_and_restore_sgx_context:
     callq restore_xregs    
     movq %rbx, %rdx
 
-	movq SGX_CPU_CONTEXT_RSP(%rsi), %rsp
-
-    movq  g_xsave_size(%rip), %rax
-    addq $SGX_CPU_CONTEXT_SIZE, %rax
-    
     movq %rsi, %r15
     addq g_xsave_size(%rip), %r15
-    addq $SGX_CPU_CONTEXT_SIZE, %r15 # rsi - uc, r15 - reserved uc
+    addq $PAL_FP_XSTATE_MAGIC2_SIZE + SGX_CPU_CONTEXT_SIZE, %r15 # rsi - uc, r15 - reserved uc
+
+    movq %r15, %rax
+    addq $SGX_CPU_CONTEXT_SIZE + 8, %rax
+    movq %rax, %rsp
 
     # increase aexcounter
     lock incq %gs:SGX_AEX_COUNTER
 
     movq SGX_CPU_CONTEXT_RIP(%rsi), %rax
-    movq %rsp, %r10
-    subq    $RED_ZONE_SIZE + 8, %r10  # save the 
 
-    # Check whether the last AEX occurred during the mitigation 
-    cmpb    $0xc3, (%rax)             # ZF=1 if interrupted c3 (ret)
-    cmovz   (%rsp), %rax              # rax: irq c3? caller rip : pre-irq rip
+    movq SGX_CPU_CONTEXT_RSP(%rsi), %r10   # r10 - uc.rsp
+
+ # Check whether the last AEX occurred during the mitigation 
+    cmpb    $0xc3, (%rax)             # ZF=1 if interrupted c3 (ret)   
+    jnz .Lct_check_aex_in_mitigation
+    # If ip = ret, check whether sp is on the sig_stack. If yes, it means the mitigation may 
+    # occur during the call instruction in mitigation handler. In this case, retrieve the IP from stack
+    # uc.rsp may not be valid so we cannot directly access it.
+    CHECK_IF_SIGNAL_STACK_IS_USED %r10, .Lct_retrieve_ip, .Lct_check_aex_in_mitigation
+.Lct_retrieve_ip:
+    movq (%r10), %rax   # rax: irq c3? caller rip : pre-irq rip
+    
+.Lct_check_aex_in_mitigation:
     lea __ct_mitigation_end(%rip), %rbx
     subq     %rax, %rbx
     cmpq     $(__ct_mitigation_end - __ct_mitigation_begin + 1), %rbx
     # CMP will set CF=1 (B) if the mitigation was interrupted, CF=0 (NB) otherwise
-    # If the mitigation was interrupt, restore the SP from reserved uc. Reason is we 
+    # If the mitigation was interrupt, restore the SP from reserved cpu context. Reason is we 
     # change the SP by saving the return IP (Line 1112). So we need to correct the 
     # SP if the mitigation was interrupt
-#    jnc L1
-#    nop
-# L1:    
-    cmovb   SGX_CPU_CONTEXT_RSP(%r15), %rsp
-    movq    %rsp, SGX_CPU_CONTEXT_RSP(%r15)
+    cmovb   SGX_CPU_CONTEXT_RSP(%r15), %r10
+  
+    movq    %r10, SGX_CPU_CONTEXT_RSP(%r15)
 
-    # If the mitigation was interrupted, restore the interrupted IP from the reserved uc context
+    # If the mitigation was interrupted, restore the interrupted IP from the reserved cpu context
     movq    SGX_CPU_CONTEXT_RIP(%rsi), %rbx
     cmovb   SGX_CPU_CONTEXT_RIP(%r15), %rbx
     movq    %rbx, SGX_CPU_CONTEXT_RIP(%r15)  # save the IP to reserved_uc->ip
-    # Save the ip to pre-irq stack, skip the red zone
-#    movq    %rbx, (%r10)
-  #  xchg    %r10, %rsp
-  #  movq    %rbx, (%rsp)
-  #  xchg    %r10, %rsp    
-    movq    %r10, %rsp
-    movq    %rbx, (%rsp)
-   
-    # pushq   %rbx
 
     # Copy RFLAGS onto the reserved stack area
     movq     SGX_CPU_CONTEXT_RFLAGS(%rsi), %rax
     movq     %rax, SGX_CPU_CONTEXT_RFLAGS(%r15)
 
-    # If the mitigation was interrupted, restore tickle parameters (rdx, rcx, r8, r9) from the the reserved uc.
+    # If the mitigation was interrupted, restore tickle parameters (rdx, rcx, r8, r9) from the the reserved cpu context.
     cmovb  SGX_CPU_CONTEXT_R10(%r15), %rdx
     cmovb  SGX_CPU_CONTEXT_R11(%r15), %rcx
     cmovb  SGX_CPU_CONTEXT_R8(%r15), %r8
@@ -1156,7 +1190,7 @@ _apply_mitigation_and_restore_sgx_context:
     movq   %r9, SGX_CPU_CONTEXT_R9(%r15)   # c3 byte address
 
 # If the mitigation was not interrupted (the interrupt occured in the main flow),
-# then restore the registers from uc context
+# then restore the registers from cpu context
     movq SGX_CPU_CONTEXT_RAX(%rsi), %rax
     cmovb SGX_CPU_CONTEXT_RAX(%r15), %rax
     movq %rax, SGX_CPU_CONTEXT_RAX(%r15) 
@@ -1174,9 +1208,10 @@ _apply_mitigation_and_restore_sgx_context:
     movq SGX_CPU_CONTEXT_R13(%rsi), %r13
     movq SGX_CPU_CONTEXT_R14(%rsi), %r14 
     # use rax to save r15  
-    movq SGX_CPU_CONTEXT_R15(%rsi), %rax    
+    movq SGX_CPU_CONTEXT_R15(%rsi), %rax
+
     movq SGX_CPU_CONTEXT_RSI(%rsi), %rsi
-# If the mitigation was interrupted, restore registers from reserved uc context
+# If the mitigation was interrupted, restore registers from reserved cpu context
 # rax has been handled above
     cmovb SGX_CPU_CONTEXT_RCX(%r15), %rcx
     cmovb SGX_CPU_CONTEXT_RDX(%r15), %rdx
@@ -1271,7 +1306,9 @@ __ct_mitigation_begin:
 .align 0x10
 .ct_warm_caches_and_tlbs_data_read:
     lea     -0x40(%ecx), %ecx
-    call    *%rdi
+
+    # NOTE: call instruction will touch current stack
+    call    *%rdi 
     movl     (%rsi, %rcx), %eax
     movl     (%rbp, %rcx), %eax
     movl     %eax, (%rbp, %rcx)
@@ -1280,7 +1317,6 @@ __ct_mitigation_begin:
     movl     (%rdx, %rcx), %eax
     jrcxz   .ct_restore_state
     jmp     .ct_warm_caches_and_tlbs_data_read # loops 64 times
-
 .ct_restore_state:
     movq     SGX_CPU_CONTEXT_RDI(%r15), %rdi
     movq     SGX_CPU_CONTEXT_RSI(%r15), %rsi
@@ -1288,14 +1324,21 @@ __ct_mitigation_begin:
     movq     SGX_CPU_CONTEXT_RBX(%r15), %rbx
     movq     SGX_CPU_CONTEXT_RDX(%r15), %rdx
     movq     SGX_CPU_CONTEXT_RCX(%r15), %rcx
-#    movq %gs:SGX_GPR, %rax
-#    movb $0x1, SGX_GPR_AEXNOTIFY(%rax)
-    movq     SGX_CPU_CONTEXT_RAX(%r15), %rax
-    movq     SGX_CPU_CONTEXT_RSP(%r15), %rsp
-    movq     SGX_CPU_CONTEXT_R15(%r15), %r15
-__ct_mitigation_end:
-    jmp      *-RED_ZONE_SIZE - 8(%rsp)   # TODO - can I restore this field in this stack?
+    movq SGX_CPU_CONTEXT_RAX(%r15), %rax
+
+    movq SGX_CPU_CONTEXT_RIP(%r15), %rsp
+    movq %rsp, %gs:SGX_TMP_RIP
+ .Lct_restore_sgx_context_inst0:
+    movq SGX_CPU_CONTEXT_RSP(%r15), %rsp
+
+ .Lct_restore_sgx_context_inst1:
+    movq SGX_CPU_CONTEXT_R15(%r15), %r15
+ .Lct_restore_sgx_context_inst2:
+  __ct_mitigation_end:
+    jmp *%gs:SGX_TMP_RIP
+
    .cfi_endproc
+
 
 .global __ct_mitigation_ret
 __ct_mitigation_ret:
@@ -1306,5 +1349,3 @@ __ct_mitigation_ret:
 .sect   _to_be_discarded, "e", @nobits
 .space MITIGATION_CODE_ALIGNMENT - (.ct_aexnotify_end - .ct_enable_aexnotify)
 .previous
-
-

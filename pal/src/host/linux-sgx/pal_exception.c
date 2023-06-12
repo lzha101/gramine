@@ -46,20 +46,6 @@ void fini_aex_notify_for_thread(void) {
               GET_ENCLAVE_TCB(aex_counter));
 }
 
-#if 0
-__attribute_no_sanitize_address
-static void apply_aex_notify(void) {
-    if (!g_aex_notify_enabled || !GET_ENCLAVE_TLS(ready_for_aex_notify))
-        return;
-
-    /* TODO: Add AEX Notify checkpointing and mitigations. */
-
-    SET_ENCLAVE_TLS(aex_counter, GET_ENCLAVE_TLS(aex_counter) + 1UL);
-
-    uint8_t* ssa0_aex_notify_byte = &GET_ENCLAVE_TLS(gpr)->aexnotify;
-    *ssa0_aex_notify_byte |= 1;
-}
-#endif
 extern uint16_t aex_notify_c3_cache[2048];
 extern uint8_t *__ct_mitigation_ret;
 
@@ -94,7 +80,7 @@ static inline bool get_tickle_pages(sgx_cpu_context_t* uc, uintptr_t *stp, uintp
     else
     {
         // in app stack area
-        // We cannot directly tickle the app stack. So use sig stack instead
+        // We cannot tickle the app stack. So use sig stack instead
         stack_tickle_pages = ((uintptr_t)&sp & ~0xFFF);
     }
     if(!stack_tickle_pages)
@@ -104,6 +90,10 @@ static inline bool get_tickle_pages(sgx_cpu_context_t* uc, uintptr_t *stp, uintp
 
     // Look up the code page in the c3 cache
     code_tickle_page = uc->rip & ~0xFFF;
+    if(code_tickle_page == 0)
+    {
+        return false;
+    }
     c3_byte_address = code_tickle_page + *(aex_notify_c3_cache + ((code_tickle_page >> 12) & 0x07FF));
     if (*(uint8_t *)c3_byte_address != 0xc3) {
         uint8_t *i = (uint8_t *)code_tickle_page, *e = i + 4096;
@@ -135,9 +125,10 @@ noreturn static void apply_mitigation_handler_and_restore_sgx_context(sgx_cpu_co
     // If interrupt happens in ocall/sig handler phase, rsp will be in `sig_stack` area.
     if(!get_tickle_pages(uc, &stack_tickle_pages, &data_tickle_page, &code_tickle_page, &c3_byte_address))
     {
-        log_error("AEX-Notify mitigation preparation failed, exiting.");
+        log_error("AEX-Notify mitigation preparation failed. Exiting...");
         _PalProcessExit(1);
     }
+
     _apply_mitigation_and_restore_sgx_context(uc, xregs_state, stack_tickle_pages, data_tickle_page, code_tickle_page, c3_byte_address);
 
 }
@@ -158,7 +149,7 @@ noreturn static void restore_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE*
 #endif
     if (g_aex_notify_enabled && GET_ENCLAVE_TCB(ready_for_aex_notify))
         apply_mitigation_handler_and_restore_sgx_context(uc, xregs_state);
-//        _restore_sgx_context(uc, xregs_state);
+        //        _restore_sgx_context(uc, xregs_state);
     else
         _restore_sgx_context(uc, xregs_state);
 }
