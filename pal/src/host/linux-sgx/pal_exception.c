@@ -57,31 +57,34 @@ static inline bool get_tickle_pages(sgx_cpu_context_t* uc, uintptr_t *stp, uintp
 
     uintptr_t code_tickle_page = 0, c3_byte_address = 0, stack_tickle_pages = 0;
     uintptr_t sp = uc->rsp;
-    if(sp < initial_stack_addr && sp > initial_stack_addr - ENCLAVE_STACK_SIZE)
+    if(sp < initial_stack_addr && sp >= initial_stack_addr - ENCLAVE_STACK_SIZE)
     {
-        uintptr_t stack_base_page = initial_stack_addr - 0x1000;
-        // in normal "stack"
-        if((sp & ~0xFFF) == stack_base_page)
+        uintptr_t stack_base_page = initial_stack_addr - PAGE_SIZE;
+        // in "stack" area
+        if(ALIGN_DOWN(sp, PAGE_SIZE) == stack_base_page)
         {
-            // sp is in the base page, but there are more
+            // sp is in the top page in "stack" area. As there are more
             // pages so we tickle the next one as well.
             stack_tickle_pages = stack_base_page | 1;
         }
         else
         {
-            stack_tickle_pages = ((sp & ~0xFFF) + 0x1000) | 1;
+            // sp is other pages in "stack" area. We will tickle both current page
+            // and the previous one
+            stack_tickle_pages = ALIGN_UP(sp, PAGE_SIZE) | 1;
         }
     }
     else if(sp >= sig_stack_low && sp <= sig_stack_high)
     {
-        // in sig stack area
-        stack_tickle_pages = ((sp & ~0xFFF) + 0x1000) | 1;
+        // sp is in "sig_stack" area. We will tickle both current page and the previous page.
+        stack_tickle_pages = ALIGN_UP(sp, PAGE_SIZE) | 1;
     }
     else
     {
-        // in app stack area
-        // We cannot tickle the app stack. So use sig stack instead
-        stack_tickle_pages = ((uintptr_t)&sp & ~0xFFF);
+        // sp is neither in "stack" nor "sig_stack" area. Perhaps it is on app stack.
+        // App stack could be an arbitrary size. We cannot tickle the pages.
+        // Choose to tickle one sig_stack page directly
+        stack_tickle_pages = ALIGN_DOWN((uintptr_t)&sp, PAGE_SIZE);
     }
     if(!stack_tickle_pages)
     {
@@ -89,14 +92,14 @@ static inline bool get_tickle_pages(sgx_cpu_context_t* uc, uintptr_t *stp, uintp
     }
 
     // Look up the code page in the c3 cache
-    code_tickle_page = uc->rip & ~0xFFF;
+    code_tickle_page = ALIGN_DOWN(uc->rip, PAGE_SIZE);
     if(code_tickle_page == 0)
     {
         return false;
     }
     c3_byte_address = code_tickle_page + *(aex_notify_c3_cache + ((code_tickle_page >> 12) & 0x07FF));
     if (*(uint8_t *)c3_byte_address != 0xc3) {
-        uint8_t *i = (uint8_t *)code_tickle_page, *e = i + 4096;
+        uint8_t *i = (uint8_t *)code_tickle_page, *e = i + PAGE_SIZE;
         for (; i != e && *i != 0xc3; ++i) {}
         if (i == e) { // code_tickle_page does not contain a c3 byte
             c3_byte_address = (uintptr_t)&__ct_mitigation_ret;
@@ -106,7 +109,18 @@ static inline bool get_tickle_pages(sgx_cpu_context_t* uc, uintptr_t *stp, uintp
                 (uint16_t)(c3_byte_address & 0xFFF);
         }
     }
+
+    aex_notify_entropy_t *tmp_entropy = &pal_get_enclave_tcb()->entropy;
+    if(--tmp_entropy->count< 0)
+    {
+        _PalRandomBitsRead(&tmp_entropy->entropy_cache, sizeof(uint32_t));
+        tmp_entropy->count = 31;
+    }
+    code_tickle_page |= tmp_entropy->entropy_cache & 1;
+    tmp_entropy->entropy_cache >>= 1;
+
     *stp = stack_tickle_pages;
+    // Temporarily use stack_tickle_pages as a data tickle page
     *dtp = stack_tickle_pages & ~1;
     *ctp = code_tickle_page;
     *c3_byte = c3_byte_address;

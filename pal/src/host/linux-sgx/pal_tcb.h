@@ -15,6 +15,12 @@ struct untrusted_area {
     bool valid;
 };
 
+struct aex_notify_entropy {
+    uint32_t entropy_cache;
+    int32_t count;
+};
+typedef struct aex_notify_entropy aex_notify_entropy_t;
+
 /*
  * Beside the classic thread control block (like ustack, thread, etc.) the TCB area is also used to
  * pass parameters needed during enclave or thread initialization. Some of them are thread specific
@@ -53,6 +59,7 @@ struct pal_enclave_tcb {
     uint64_t  ready_for_aex_notify;
     uint64_t  aex_notify_flag;
     uint64_t  aex_counter;
+    aex_notify_entropy_t entropy;
 };
 
 #ifndef DEBUG

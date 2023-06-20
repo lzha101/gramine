@@ -1,6 +1,6 @@
 
- // Generates code that consumes `n` cycles by repeatedly moving from register
-// `r` to itself.
+ # Generates code that consumes `n` cycles by repeatedly moving from register
+ # `r` to itself.
 .macro CYCLE_DELAY n r
     lea (\r), \r
 .if \n-1
@@ -607,7 +607,7 @@ enclave_entry:
     movq %r10, %rdx
 
 .Lcssa1_exception_eexit:
-    cmpl $1, g_aex_notify_enabled(%rip)
+    cmpb $1, g_aex_notify_enabled(%rip)
     je 1f
 
     # AEX Notify is not set, stage-1 exception handler follows the normal EEXIT flow.
@@ -1260,7 +1260,7 @@ _apply_mitigation_and_restore_sgx_context:
 
     .global __ct_mitigation_begin
 __ct_mitigation_begin:
-# Step 1: Inject random cycle noise
+    # Inject random cycle noise
     movzx %sil, %rcx # The lowest byte in %xsi indicates whether cycles should be added
     movb   $0, %sil
     lfence
@@ -1273,34 +1273,10 @@ __ct_mitigation_begin:
     jrcxz   .ct_set_up_tickles_with_one_stack_page
     movb     $0x00, %bpl
     leaq     -0x1000(%rbp), %rbx
-    jmp .ct_warm_caches_and_tlbs
+    jmp .ct_warm_caches_and_tlbs_data_read_pre
 .ct_set_up_tickles_with_one_stack_page:
     leaq     0x08(%rbp), %rbx
 
-# Load all working set cache lines and warm the TLB entries
-.ct_warm_caches_and_tlbs:
-    movzx   %dl, %rcx # The lowest byte in %rdx indicates whether data_tickle_page can be written to
-    mov     $0x10, %dl # avoid sequencing uops, in case rbp and rdx alias
-    jrcxz   .ct_warm_caches_and_tlbs_data_read_pre
-
-# .ct_warm_caches_and_tlbs_data_write_pre:
-#    mov     $0x1000, %ecx
-# .align 0x10
-# .ct_warm_caches_and_tlbs_data_write:
-#    lea     -0x40(%ecx), %ecx
-#    call    *%rdi
-#    movl     (%rsi, %rcx), %eax
-#    movl     (%rbp, %rcx), %eax
-#    movl     %eax, (%rbp, %rcx)
-#    movl     (%rbx, %rcx), %eax
-#    movl     %eax, (%rbx, %rcx)
-#    movl     (%rdx, %rcx), %eax
-#    movl     %eax, (%rdx, %rcx)
-#    jrcxz   .ct_restore_state
-#    jmp     .ct_warm_caches_and_tlbs_data_write # loops 64 times
-
-# This block is identical to the previous one, except that it doesn't write
-# to data_tickle_page.
 .ct_warm_caches_and_tlbs_data_read_pre:
     movl     $0x1000, %ecx
 .align 0x10
@@ -1317,6 +1293,8 @@ __ct_mitigation_begin:
     movl     (%rdx, %rcx), %eax
     jrcxz   .ct_restore_state
     jmp     .ct_warm_caches_and_tlbs_data_read # loops 64 times
+
+
 .ct_restore_state:
     movq     SGX_CPU_CONTEXT_RDI(%r15), %rdi
     movq     SGX_CPU_CONTEXT_RSI(%r15), %rsi
@@ -1330,10 +1308,7 @@ __ct_mitigation_begin:
     movq %rsp, %gs:SGX_TMP_RIP
  .Lct_restore_sgx_context_inst0:
     movq SGX_CPU_CONTEXT_RSP(%r15), %rsp
-
- .Lct_restore_sgx_context_inst1:
     movq SGX_CPU_CONTEXT_R15(%r15), %r15
- .Lct_restore_sgx_context_inst2:
   __ct_mitigation_end:
     jmp *%gs:SGX_TMP_RIP
 
