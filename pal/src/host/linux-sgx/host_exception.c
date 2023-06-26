@@ -218,7 +218,6 @@ void sgx_handle_aex_signal(void) {
          * stage-1 handling of another sync/async event would generate a sync event) */
         enum pal_event event = pal_get_host_tcb()->aex_sync_event;
         pal_get_host_tcb()->aex_sync_event = PAL_EVENT_NO_EVENT;
-        log_debug("handle sync event: %#x\n", event);
         sgx_raise(event);
         return;
     }
@@ -230,7 +229,6 @@ void sgx_handle_aex_signal(void) {
          * otherwise it means that the enclave was already in the middle of stage-1 handler and
          * could not consume this async event: simply ignore for now; the very next AEX will try to
          * raise this async event again */
-        log_debug("handle async event: %#x\n", event);
         sgx_raise(event);
         enum pal_event no_event = PAL_EVENT_NO_EVENT;
         __atomic_compare_exchange_n(&pal_get_host_tcb()->aex_async_event, &no_event, event,

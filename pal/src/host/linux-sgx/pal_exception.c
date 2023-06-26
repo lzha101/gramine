@@ -134,9 +134,6 @@ noreturn static void apply_mitigation_handler_and_restore_sgx_context(sgx_cpu_co
 
     assert(g_aex_notify_enabled);
     uintptr_t code_tickle_page, c3_byte_address, stack_tickle_pages, data_tickle_page;
-    // If interrupt happens in app code, it means rsp is in `free` area, we need to get the stack tickle page, data page, code page from app area
-    // If interrupt happens in pal/libos, the rsp will be in `stack` area.
-    // If interrupt happens in ocall/sig handler phase, rsp will be in `sig_stack` area.
     if(!get_tickle_pages(uc, &stack_tickle_pages, &data_tickle_page, &code_tickle_page, &c3_byte_address))
     {
         log_error("AEX-Notify mitigation preparation failed. Exiting...");
@@ -163,7 +160,6 @@ noreturn static void restore_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE*
 #endif
     if (g_aex_notify_enabled && GET_ENCLAVE_TCB(ready_for_aex_notify))
         apply_mitigation_handler_and_restore_sgx_context(uc, xregs_state);
-        //        _restore_sgx_context(uc, xregs_state);
     else
         _restore_sgx_context(uc, xregs_state);
 }
@@ -366,9 +362,6 @@ static bool handle_ud(sgx_cpu_context_t* uc) {
 }
 
 /* perform exception handling inside the enclave */
-/*exit_info - rdi
-   uc - rsi
-   xreg_state - rdx */
 void _PalExceptionHandler(unsigned int exit_info, sgx_cpu_context_t* uc,
                           PAL_XREGS_STATE* xregs_state, sgx_arch_exinfo_t* exinfo) {
     assert(IS_ALIGNED_PTR(xregs_state, PAL_XSTATE_ALIGN));

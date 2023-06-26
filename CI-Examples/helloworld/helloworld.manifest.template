@@ -13,7 +13,6 @@ fs.mounts = [
 
 sgx.debug = true
 sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
-sgx.enable_aex_notify = true
 
 sgx.trusted_files = [
   "file:{{ gramine.libos }}",

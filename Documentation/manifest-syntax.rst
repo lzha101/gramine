@@ -1138,4 +1138,9 @@ AEX Notify
     (Default: false)
 
 When enabled, this option instructs Gramine to use the new AEX Notify hardware
-feature. TODO: Explain what exactly it does.
+feature, which is a security feature used to mitigate the SGX-Step type attacks
+on SGX. The SGX-Step type attacks rely on frequent enclave preemptions (e.g. interrupts)
+to execute an SGX enclave in small increments and strategically extract secret data
+from the enclave through one or more side channels. The AEX Notify feture allows
+a mitigation handler to run after ERESUME from each Async Exit, aiming to mitigate the
+side-channel information exposed by the attacks.
