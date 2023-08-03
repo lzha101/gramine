@@ -1228,18 +1228,24 @@ _apply_mitigation_and_restore_sgx_context:
     movq %rsi, SGX_CPU_CONTEXT_RSI(%r15)
     movq %rax, SGX_CPU_CONTEXT_R15(%r15)   
   
-    # Restore rflags
-    leaq SGX_CPU_CONTEXT_RFLAGS(%r15), %rbx   # these are stored in the sig_stack as the cpu_context
-    xchg %rbx, %rsp
-    popfq
-    xchg %rbx, %rsp
-
     # Restore tickle addresses
     movq SGX_CPU_CONTEXT_R8(%r15), %rsi  # code tickle page
     movq SGX_CPU_CONTEXT_R9(%r15), %rdi  # c3 byte address
     movq SGX_CPU_CONTEXT_R10(%r15), %rbp # stack tickle pages
     movq SGX_CPU_CONTEXT_R11(%r15), %rdx # data tickle page
 
+    # Setup the stack tickles
+    shrb $1, %bpl # Bit 0 in %rbp indicates whether a second stack page can be tickled
+    movq %rbp, %rbx
+    jnc 1f
+    subq $0x1000, %rbx
+
+1:
+    # Restore rflags
+    leaq SGX_CPU_CONTEXT_RFLAGS(%r15), %rax   # these are stored in the sig_stack as the cpu_context
+    xchg %rax, %rsp
+    popfq
+    xchg %rax, %rsp
     # NOTHING AFTER THIS POINT CAN MODIFY EFLAGS/RFLAGS
 
 ################################################################################
@@ -1257,48 +1263,52 @@ _apply_mitigation_and_restore_sgx_context:
 
     .global __ct_mitigation_begin
 __ct_mitigation_begin:
-    # Inject random cycle noise
-    movzx %sil, %rcx # The lowest byte in %xsi indicates whether cycles should be added
-    movb $0, %sil
     lfence
-    jrcxz .ct_set_up_tickles
-    CYCLE_DELAY 20, %rax
 
-.ct_set_up_tickles:
-    lfence
-    movzx %bpl, %rcx # The lowest byte in %rbp indicates whether a second stack page can be tickled
-    jrcxz .ct_set_up_tickles_with_one_stack_page
-    movb $0x00, %bpl
-    leaq -0x1000(%rbp), %rbx
-    jmp .ct_warm_caches_and_tlbs_data_read_pre
-.ct_set_up_tickles_with_one_stack_page:
-    leaq 0x08(%rbp), %rbx
+.ct_check_write:
+    movl    $63, %ecx
+    shlx    %rcx, %rsi, %rcx # Bit 0 in %rsi indicates whether data_tickle_address can be written
+    jrcxz   .ct_clear_low_bits_of_rdx
+    lea     -1(%rsi), %rsi   # Clear bit 0 in %rsi
+    movb    (%rdx), %al
+    movb    %al, (%rdx)      # Will fault if the data page is not writable
 
-.ct_warm_caches_and_tlbs_data_read_pre:
-    movl $0x1000, %ecx
+.ct_clear_low_bits_of_rdx:
+    movl    $12, %ecx
+    shrx    %rcx, %rdx, %rdx
+    shlx    %rcx, %rdx, %rdx
+
+.ct_check_execute:
+    call    *%rdi
+
+# Load all working set cache lines and warm the TLB entries
+    mov     $0x1000, %ecx
 .align 0x10
-.ct_warm_caches_and_tlbs_data_read:
-    lea -0x40(%ecx), %ecx
-
-    # NOTE: call instruction will touch current stack
-    call *%rdi
-    movl (%rsi, %rcx), %eax
-    movl (%rbp, %rcx), %eax
-    movl %eax, (%rbp, %rcx)
-    movl (%rbx, %rcx), %eax
-    movl %eax, (%rbx, %rcx)
-    movl (%rdx, %rcx), %eax
-    jrcxz .ct_restore_state
-    jmp .ct_warm_caches_and_tlbs_data_read # loops 64 times
+.ct_warm_caches_and_tlbs:
+    lea     -0x40(%ecx), %ecx
+    mov     (%rsi, %rcx), %eax
+    mov     (%rbp, %rcx), %eax
+    mov     (%rbx, %rcx), %eax
+    mov     (%rdx, %rcx), %eax
+    jrcxz   .ct_restore_state
+    jmp     .ct_warm_caches_and_tlbs # loops 64 times
 
 .ct_restore_state:
+    # Bit 4 of %sil indicates whether cycles should be added
+    movzx   %sil, %ecx
     movq SGX_CPU_CONTEXT_RDI(%r15), %rdi
     movq SGX_CPU_CONTEXT_RSI(%r15), %rsi
     movq SGX_CPU_CONTEXT_RBP(%r15), %rbp
     movq SGX_CPU_CONTEXT_RBX(%r15), %rbx
     movq SGX_CPU_CONTEXT_RDX(%r15), %rdx
-    movq SGX_CPU_CONTEXT_RCX(%r15), %rcx
     movq SGX_CPU_CONTEXT_RAX(%r15), %rax
+
+# Inject random cycle noise
+    jrcxz  .ct_restore_rcx
+    CYCLE_DELAY 20, %rsp
+
+.ct_restore_rcx:
+    movq SGX_CPU_CONTEXT_RCX(%r15), %rcx
 
     movq SGX_CPU_CONTEXT_RIP(%r15), %rsp
     movq %rsp, %gs:SGX_TMP_RIP

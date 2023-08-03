@@ -116,7 +116,7 @@ static inline bool get_tickle_pages(sgx_cpu_context_t* uc, uintptr_t *stp, uintp
         _PalRandomBitsRead(&tmp_entropy->entropy_cache, sizeof(uint32_t));
         tmp_entropy->count = 31;
     }
-    code_tickle_page |= tmp_entropy->entropy_cache & 1;
+    code_tickle_page |= (tmp_entropy->entropy_cache & 1) << 4;
     tmp_entropy->entropy_cache >>= 1;
 
     *stp = stack_tickle_pages;
