@@ -649,7 +649,7 @@ enclave_entry:
     # go from SSA[1] to SSA[0] (more specifically, simply decrement CSSA from 1 to 0);
     # must be careful after this ENCLU instruction because may be interrupted by new exceptions
     movq $EDECCSSA, %rax
-    ENCLU
+    enclu
 
     # finally jump to the stage-2 C exception handler; beware of data races!
     .Lfinalize_context_after_deccssa_inst0:

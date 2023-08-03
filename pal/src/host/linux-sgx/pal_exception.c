@@ -24,11 +24,11 @@ void init_aex_notify_for_thread(void) {
     if (!g_aex_notify_enabled)
         return;
 
-    SET_ENCLAVE_TLS(aex_counter, 0UL);
-    SET_ENCLAVE_TLS(ready_for_aex_notify, 1UL);
+    SET_ENCLAVE_TCB(aex_counter, 0UL);
+    SET_ENCLAVE_TCB(ready_for_aex_notify, 1UL);
     MB();
 
-    uint8_t* ssa0_aex_notify_byte = &GET_ENCLAVE_TLS(gpr)->aexnotify;
+    uint8_t* ssa0_aex_notify_byte = &GET_ENCLAVE_TCB(gpr)->aexnotify;
     *ssa0_aex_notify_byte |= 1;
 }
 
@@ -36,14 +36,14 @@ void fini_aex_notify_for_thread(void) {
     if (!g_aex_notify_enabled)
         return;
 
-    SET_ENCLAVE_TLS(ready_for_aex_notify, 0UL);
+    SET_ENCLAVE_TCB(ready_for_aex_notify, 0UL);
     MB();
 
-    uint8_t* ssa0_aex_notify_byte = &GET_ENCLAVE_TLS(gpr)->aexnotify;
+    uint8_t* ssa0_aex_notify_byte = &GET_ENCLAVE_TCB(gpr)->aexnotify;
     *ssa0_aex_notify_byte &= 0xfe;
 
-    log_debug("AEX counter of thread %d = %lu", GET_ENCLAVE_TLS(thread)->tid,
-              GET_ENCLAVE_TLS(aex_counter));
+    log_debug("AEX counter of thread = %lu",
+              GET_ENCLAVE_TCB(aex_counter));
 }
 
 #if 0

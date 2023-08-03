@@ -437,7 +437,7 @@ static inline int enclu(uint32_t eax, uint64_t rbx, uint64_t rcx, uint64_t rdx) 
 #define EACCEPT     5
 #define EMODPE      6
 #define EACCEPTCOPY 7
-#define DECCSSA     8
+#define EDECCSSA    9
 
 #define SGX_LAUNCH_KEY         0
 #define SGX_PROVISION_KEY      1
